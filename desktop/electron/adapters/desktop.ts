@@ -17,7 +17,7 @@ abstract class ObservedDesktopAdapter implements AgentAdapter {
   private timer?: NodeJS.Timeout;
   private polling = false;
   private refreshPromise?: Promise<void>;
-  protected active?: { text: string; done: boolean; error?: string; cancelled: boolean; onEvent: (ev: AgentStreamEvent) => void };
+  protected active?: { text: string; messages: Map<string, string>; done: boolean; error?: string; cancelled: boolean; onEvent: (ev: AgentStreamEvent) => void };
   protected working = false;
   abstract createSession(bot: BotConfig): Promise<SessionHandle>;
   abstract healthCheck(): Promise<HealthResult>;
@@ -36,8 +36,11 @@ abstract class ObservedDesktopAdapter implements AgentAdapter {
     if (observation.type === 'state') this.working = observation.working;
     if (this.active) {
       if (observation.type === 'message' && observation.role === 'assistant') {
-        this.active.text += `${this.active.text ? '\n\n' : ''}${observation.text}`;
-        this.active.onEvent({ type: 'text_delta', text: observation.text });
+        const previous = this.active.messages.get(observation.id);
+        const separator = previous === undefined && this.active.messages.size ? '\n\n' : '';
+        this.active.messages.set(observation.id, (previous ?? '') + observation.text);
+        this.active.text = [...this.active.messages.values()].join('\n\n');
+        this.active.onEvent({ type: 'text_delta', text: separator + observation.text });
       } else if (observation.type === 'activity') {
         this.active.onEvent(observation.event);
         if (observation.event.type === 'turn_completed') this.active.done = true;
@@ -64,7 +67,7 @@ abstract class ObservedDesktopAdapter implements AgentAdapter {
     if (this.active) return { ok: false, error: '此桌面对话正在执行 Agent Bot 任务' };
     await this.refresh(bot);
     if (this.working) return { ok: false, error: '原 Agent 正在执行任务；等待原对话结束后再派单，未插入新指令' };
-    const turn = { text: '', done: false, cancelled: false, onEvent, error: undefined as string | undefined };
+    const turn = { text: '', messages: new Map<string, string>(), done: false, cancelled: false, onEvent, error: undefined as string | undefined };
     this.active = turn;
     let standalone: NodeJS.Timeout | undefined;
     if (!this.timer) standalone = setInterval(() => { void this.refresh(bot).catch(e => { turn.error = e.message; turn.done = true; }); }, 500);
