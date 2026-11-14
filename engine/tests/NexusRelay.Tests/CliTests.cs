@@ -357,7 +357,9 @@ public sealed class CliTests : IDisposable
         // gate) publish over and delete each other's files.
         string output = Path.Join(iso.Root, "lifetime");
         string build = Path.Join(iso.Root, "lifetime-build") + "/"; // not '\': before a closing quote, it would escape it
-        var published = Native.RunFile(Native.DotnetExe, ["publish", Path.Join(Paths.Repo(), "tests", "native_lifetime", "LifetimeFixture.csproj"), "-c", "Release", "-o", output, "-p:NexusRelayBuild=" + build, "--nologo", "-v", "q"], timeoutS: 600);
+        // Explorer does not inherit this test runner's DOTNET_ROOT/PATH. Match the shipped
+        // self-contained engine so the broker child does not depend on a machine-wide runtime.
+        var published = Native.RunFile(Native.DotnetExe, ["publish", Path.Join(Paths.Repo(), "tests", "native_lifetime", "LifetimeFixture.csproj"), "-c", "Release", "-r", "win-x64", "--self-contained", "true", "-o", output, "-p:NexusRelayBuild=" + build, "--nologo", "-v", "q"], timeoutS: 600);
         Assert.True(published.Code == 0, published.Out + published.Err);
         var result = Native.RunFile(Path.Join(output, "LifetimeFixture.exe"), ["--test"], timeoutS: 600);
         Assert.True(result.Code == 0, result.Out + result.Err);

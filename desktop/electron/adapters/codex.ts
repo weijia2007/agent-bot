@@ -170,6 +170,7 @@ export class CodexSessionAdapter implements AgentAdapter {
       const started = await rpc.request('thread/start', {
         cwd: bot.workspace && fs.existsSync(bot.workspace) ? bot.workspace : os.homedir(),
         ...(bot.model ? { model: bot.model } : {}),
+        ...(bot.reasoning_effort ? { config: { model_reasoning_effort: bot.reasoning_effort } } : {}),
       }, 6000) as Record<string, unknown> | null;
       const thread = (started?.thread ?? {}) as Record<string, unknown>;
       const threadId = String(thread.id ?? started?.threadId ?? started?.id ?? '');
@@ -180,7 +181,13 @@ export class CodexSessionAdapter implements AgentAdapter {
         let done = false;
         let streamedText = '';
         const finish = (r: TurnResult): void => {
-          if (!done) { done = true; clearTimeout(timer); rpc.kill(); resolve(r.ok && !r.text && streamedText ? { ...r, text: streamedText } : r); }
+          if (!done) {
+            done = true;
+            clearTimeout(timer);
+            rpc.kill();
+            const withSession = !r.sessionId && session.threadId ? { ...r, sessionId: session.threadId } : r;
+            resolve(withSession.ok && !withSession.text && streamedText ? { ...withSession, text: streamedText } : withSession);
+          }
         };
         const timer = setTimeout(() => finish({ ok: false, uncertain: true, error: 'app-server turn timed out' }), 20 * 60 * 1000);
         rpc.onNotification = (method, params) => this.mapNotification(method, params, (ev) => {
@@ -191,6 +198,7 @@ export class CodexSessionAdapter implements AgentAdapter {
           threadId,
           input: [{ type: 'text', text: prompt }],
           ...(bot.model ? { model: bot.model } : {}),
+          ...(bot.reasoning_effort ? { effort: bot.reasoning_effort } : {}),
         }, 10_000)
           .catch((e) => finish({ ok: false, error: (e as Error).message }));
       });
@@ -229,6 +237,7 @@ export class CodexSessionAdapter implements AgentAdapter {
       ? ['exec', 'resume', threadId, '--skip-git-repo-check']
       : ['exec', '--skip-git-repo-check', '-C', cwd];
     if (bot.model) base.push('-m', bot.model);
+    if (bot.reasoning_effort) base.push('-c', `model_reasoning_effort="${bot.reasoning_effort}"`);
     return [
       entry.codexJs, ...base, '--json',
       '-c', `mcp_servers.nexus_bot_studio.url="${mcpUrl(bot.bot_id)}"`,

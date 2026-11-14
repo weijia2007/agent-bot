@@ -6,6 +6,7 @@ import RoomView from './components/RoomView';
 import BotView from './components/BotView';
 import Inspector from './components/Inspector';
 import NewBotDialog, { NewRoomDialog } from './components/NewBotDialog';
+import packageInfo from '../package.json';
 
 function Resizer({ onDrag }: { onDrag: (e: React.MouseEvent) => void }): React.ReactNode {
   return (
@@ -40,6 +41,7 @@ function TopBar(): React.ReactNode {
           <Bot size={14} />
         </span>
         <span className="text-[13px] font-semibold tracking-tight text-slate-100">Agent Bot</span>
+        <button type="button" className="text-[10px] text-slate-500 hover:text-sky-300" title="打开使用说明" onClick={() => { void window.studio.openHelp().catch(e => toast(e.message, 'error')); }}>v{packageInfo.version}</button>
       </div>
 
       <div className="h-4 w-px bg-white/8" />

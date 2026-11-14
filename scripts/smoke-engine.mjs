@@ -95,6 +95,8 @@ function openEvents() {
 
 async function main() {
   if (!fs.existsSync(EXE)) throw new Error(`engine binary missing: ${EXE}`);
+  const resolvedHome = fs.existsSync(HOME) ? fs.realpathSync(HOME) : path.resolve(HOME);
+  if (!resolvedHome.startsWith(fs.realpathSync(ROOT) + path.sep) || path.basename(resolvedHome) !== '.smoke-home') throw new Error('Refusing to reset a smoke directory outside the workspace');
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.mkdirSync(HOME, { recursive: true });
 
@@ -109,7 +111,7 @@ async function main() {
     NEXUS_BOT_MAX_HOPS: '10',
     NEXUS_RELAY_UPDATE_CHECK: '0',
   };
-  const proc = spawn(EXE, ['--http', String(PORT)], {
+  const proc = spawn(EXE, ['--http', String(PORT), '--bot-studio'], {
     env, cwd: path.dirname(EXE), windowsHide: true, stdio: 'ignore',
   });
   proc.on('error', (e) => console.error('engine spawn error:', e.message));
@@ -173,6 +175,9 @@ async function main() {
     const after = await request('GET', '/api/bots?room=studio');
     const ids2 = (after.body.bots ?? []).map((b) => b.bot_id);
     check('unregistered bot disappears', !ids2.includes('be-codex-1'), ids2.join(','));
+    const stateDir = path.join(HOME, 'relay', 'v1', 'state');
+    const maintenance = fs.existsSync(stateDir) ? fs.readdirSync(stateDir).filter(file => /codex-tidy|agy-tidy|port-maintenance|native-cards-check/.test(file)) : [];
+    check('desktop engine does not run legacy app maintenance', maintenance.length === 0, maintenance.join(','));
   } finally {
     proc.kill();
   }

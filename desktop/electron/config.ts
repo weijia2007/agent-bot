@@ -6,13 +6,14 @@ import crypto from 'node:crypto';
 
 /** Everything the desktop client owns lives here. The original NexusRelay keeps ~/.nexus/relay
  *  and port 16181; we never read or write either. */
-export const DATA_HOME = path.join(os.homedir(), '.nexus-bot-studio');
+export const DATA_HOME = process.env.NEXUS_BOT_DATA_HOME ? path.resolve(process.env.NEXUS_BOT_DATA_HOME) : path.join(os.homedir(), '.nexus-bot-studio');
 export const RELAY_HOME = path.join(DATA_HOME, 'relay');
 export const MCP_CONFIG_DIR = path.join(DATA_HOME, 'mcp-configs');
 export const WORKTREE_ROOT = path.join(DATA_HOME, 'worktrees');
 export const LOG_DIR = path.join(DATA_HOME, 'logs');
 export const STATE_FILE = path.join(DATA_HOME, 'studio-state.json');
-export const ENGINE_PORT = 16191;
+const configuredPort = Number(process.env.NEXUS_BOT_ENGINE_PORT ?? '16191');
+export const ENGINE_PORT = Number.isInteger(configuredPort) && configuredPort > 1024 && configuredPort < 65536 && configuredPort !== 16181 ? configuredPort : 16191;
 export const DEV_SERVER = 'http://127.0.0.1:5173';
 
 export function ensureDirs(): void {

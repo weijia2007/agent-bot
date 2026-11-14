@@ -77,7 +77,14 @@ public static class Program
                 port = p;
             using var cts = new CancellationTokenSource();
             Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
-            using var fixtureRuntime = args.Contains("--protocol-fixture", StringComparer.Ordinal) ? new RelayRuntime(waker: (_, _, _) => AppTransport.Result("deferred", "isolated protocol fixture; app transport disabled"), tidy: () => { }) : null;
+            // Agent Bot owns real desktop connections. The relay remains a message/lock service;
+            // its legacy app waker, window maintenance and chat tidier must never compete with it.
+            bool desktopOrchestrated = args.Contains("--bot-studio", StringComparer.Ordinal);
+            using var fixtureRuntime = desktopOrchestrated || args.Contains("--protocol-fixture", StringComparer.Ordinal)
+                ? new RelayRuntime(waker: (_, _, _) => AppTransport.Result("deferred", desktopOrchestrated
+                    ? "desktop session delivery is owned by Agent Bot"
+                    : "isolated protocol fixture; app transport disabled"), tidy: () => { })
+                : null;
             await McpServer.RunHttpAsync(port, fixtureRuntime, cts.Token);
             return 0;
         }

@@ -125,6 +125,7 @@ export class ClaudeSessionAdapter implements AgentAdapter {
       '--input-format', 'stream-json',
       '--verbose',
       ...(bot.model ? ['--model', bot.model] : []),
+      ...(bot.reasoning_effort ? ['--effort', bot.reasoning_effort] : []),
       session.firstTurn ? '--session-id' : '--resume', session.id,
       '--mcp-config', session.mcpConfig,
       '--strict-mcp-config',
@@ -201,8 +202,9 @@ export class ClaudeSessionAdapter implements AgentAdapter {
           emit({ type: 'turn_completed', summary: finalText.slice(-2000) });
           done({ ok: true, sessionId: session.id, text: finalText });
         } else {
-          emit({ type: 'error', message: stderr.slice(-1200) || `exit ${code}` });
-          done({ ok: false, sessionId: session.id, error: stderr.slice(-1200) || `claude exited ${code}` });
+          const msg = stderr.trim().slice(-1200) || fallbackResult.trim().slice(-1200) || `claude exited ${code}`;
+          emit({ type: 'error', message: msg });
+          done({ ok: false, sessionId: session.id, error: msg });
         }
       });
 

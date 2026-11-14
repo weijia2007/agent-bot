@@ -71,7 +71,7 @@ export class BotScheduler {
     if (this.paused || this.busy.has(botId)) return;
     const queue = this.queues.get(botId);
     const turn = queue?.shift();
-    if (!turn) { this.setStatus(botId, 'idle'); return; }
+    if (!turn) return;
     this.onQueueChange?.(botId, queue!.length);
     this.busy.add(botId);
     this.setStatus(botId, 'working');
@@ -93,11 +93,13 @@ export class BotScheduler {
 
   setRunner(fn: (turn: QueuedTurn) => Promise<boolean>): void { this.runner = fn; }
 
-  abortAll(adapters: Map<string, AgentAdapter>, bots: Map<string, BotConfig>): void {
+  async abortAll(adapters: Map<string, AgentAdapter>, bots: Map<string, BotConfig>): Promise<{ botId: string; error: string }[]> {
     this.clearAll();
+    const requests: Promise<{ botId: string; error: string } | null>[] = [];
     for (const [id, adapter] of adapters) {
       const bot = bots.get(id);
-      if (bot) void adapter.abortTurn(bot);
+      if (bot) requests.push(adapter.abortTurn(bot).then(() => null, e => ({ botId: id, error: (e as Error).message })));
     }
+    return (await Promise.all(requests)).filter((value): value is { botId: string; error: string } => value !== null);
   }
 }

@@ -1,7 +1,9 @@
 import { create } from 'zustand';
-import type {
-  BotConfig, DiffEntry, EngineHealth, QuotaState, Room, RoomMessage,
-  SearchHit, StreamEvent, StudioState,
+import {
+  formatModelLabel,
+  type BotConfig, type DiffEntry, type EngineHealth, type EngineModelCatalog, type QuotaState,
+  type Room, type RoomMessage, type SearchHit, type StreamEvent, type StudioState,
+  type DesktopSession, type EngineType, type PermissionMode,
 } from './types';
 
 type ChannelPayloads = Record<string, unknown>;
@@ -14,11 +16,17 @@ declare global {
       setRoomProject(roomId: string, projectPath: string): Promise<boolean>;
       createBot(input: unknown): Promise<BotConfig>;
       deleteBot(botId: string): Promise<boolean>;
+      stopBot(botId: string): Promise<void>;
       reconnectBot(botId: string): Promise<BotConfig | null>;
-      setBotModel(botId: string, model: string): Promise<BotConfig | null>;
+      setBotModel(botId: string, model: string, reasoningEffort?: string): Promise<BotConfig | null>;
+      listModels(refresh?: boolean): Promise<EngineModelCatalog>;
+      listDesktopSessions(engine: EngineType): Promise<DesktopSession[]>;
+      listDesktopTargets(): Promise<{ id: string; label: string }[]>;
+      launchDesktop(engine: EngineType, roomId: string): Promise<void>;
+      setBotPermission(id: string, mode: PermissionMode): Promise<BotConfig>;
       setSupervisor(botId: string): Promise<boolean>;
-      sendMessage(room: string, text: string, target?: string | null): Promise<RoomMessage>;
-      sendDirect(botId: string, text: string, room: string): Promise<RoomMessage>;
+      sendMessage(room: string, text: string, target?: string | null, attachments?: string[]): Promise<RoomMessage>;
+      sendDirect(botId: string, text: string, room: string, attachments?: string[]): Promise<RoomMessage>;
       emergencyStop(active: boolean): Promise<boolean>;
       respondApproval(id: string, approved: boolean, reason?: string | null): Promise<boolean>;
       resolveHopPause(id: string, resume: boolean): Promise<boolean>;
@@ -35,7 +43,12 @@ declare global {
       quotas(): Promise<QuotaState>;
       openPath(target: string): Promise<boolean>;
       pickProject(): Promise<string | null>;
+      pickAttachments(): Promise<string[]>;
+      pathForFile(file: File): string;
+      openSession(id: string): Promise<boolean>;
+      openCodexConversation(id: string): Promise<boolean>;
       dataHome(): Promise<string>;
+      openHelp(): Promise<boolean>;
       on(channel: string, listener: (payload: unknown) => void): () => void;
     };
   }
@@ -58,12 +71,15 @@ interface StudioStore {
   streams: Record<string, StreamEvent[]>;
   health: EngineHealth | null;
   quotas: QuotaState | null;
+  modelsCatalog: EngineModelCatalog | null;
+  modelsLoading: boolean;
   toasts: Toast[];
   ready: boolean;
   wsConnected: boolean;
   setActiveRoom(id: string): void;
   setActiveBot(id: string | null): void;
-  setBotModel(botId: string, model: string): Promise<void>;
+  setBotModel(botId: string, model: string, reasoningEffort?: string): Promise<void>;
+  loadModels(refresh?: boolean): Promise<void>;
   setInspectorOpen(open: boolean): void;
   setInspectorTab(tab: InspectorTab): void;
   setSidebarWidth(width: number): void;
@@ -92,14 +108,28 @@ export const useStudio = create<StudioStore>((set, get) => ({
   streams: {},
   health: null,
   quotas: null,
+  modelsCatalog: null,
+  modelsLoading: false,
   toasts: [],
   ready: false,
   wsConnected: false,
 
   setActiveRoom: (id) => set({ activeRoom: id, activeBot: null }),
   setActiveBot: (id) => set({ activeBot: id }),
-  setBotModel: async (botId, model) => {
-    const updated = await window.studio.setBotModel(botId, model);
+  loadModels: async (refresh = false) => {
+    set({ modelsLoading: true });
+    try {
+      const modelsCatalog = await window.studio.listModels(refresh);
+      set({ modelsCatalog, modelsLoading: false });
+      if (refresh) get().toast('已重新读取本机模型与强度列表', 'success');
+    } catch (e) {
+      set({ modelsLoading: false });
+      if (refresh) get().toast(`读取模型列表失败：${(e as Error).message}`, 'error');
+    }
+  },
+  setBotModel: async (botId, model, reasoningEffort) => {
+    try {
+    const updated = await window.studio.setBotModel(botId, model, reasoningEffort);
     if (updated) {
       set((s) => s.state ? ({
         state: {
@@ -107,8 +137,10 @@ export const useStudio = create<StudioStore>((set, get) => ({
           bots: s.state.bots.map((b) => (b.bot_id === botId ? updated : b)),
         },
       }) : s);
-      get().toast(`已切换模型为 ${updated.model || '默认模型'}`, 'success');
+      const label = formatModelLabel(updated.engine_type, updated.model, get().modelsCatalog, updated.reasoning_effort);
+      get().toast(`已保存桌面模型配置，下一轮生效：${label}`, 'success');
     }
+    } catch (e) { get().toast(`模型切换失败：${(e as Error).message}`, 'error'); }
   },
   setInspectorOpen: (open) => set({ inspectorOpen: open }),
   setInspectorTab: (tab) => set({ inspectorTab: tab, inspectorOpen: true }),
@@ -137,7 +169,8 @@ export const useStudio = create<StudioStore>((set, get) => ({
     initialized = true;
     try {
       const state = await window.studio.getState();
-      set({ state, activeRoom: state.rooms[0]?.id ?? 'default', ready: true });
+      set({ state, streams: state.activity ?? {}, activeRoom: state.rooms[0]?.id ?? 'default', ready: true });
+      void get().loadModels().catch(() => undefined);
     } catch (e) {
       set({ ready: true });
       get().toast(`读取状态失败：${(e as Error).message}`, 'error');
@@ -145,7 +178,7 @@ export const useStudio = create<StudioStore>((set, get) => ({
     }
 
     const handlers: Record<string, (p: unknown) => void> = {
-      state: (p) => set({ state: p as StudioState }),
+      state: (p) => { const state = p as StudioState; set({ state, streams: state.activity ?? {} }); },
       bots: (p) => set((s) => ({ state: s.state ? { ...s.state, bots: p as BotConfig[] } : s.state })),
       rooms: (p) => set((s) => ({ state: s.state ? { ...s.state, rooms: p as Room[] } : s.state })),
       approvals: (p) => set((s) => ({ state: s.state ? { ...s.state, approvals: p as StudioState['approvals'] } : s.state })),
@@ -171,18 +204,26 @@ export const useStudio = create<StudioStore>((set, get) => ({
           const exists = s.state.messages.some((m) => m.id === message.id);
           const messages = exists
             ? s.state.messages.map((m) => m.id === message.id ? message : m)
-            : [...s.state.messages, message].slice(-500);
+            : [...s.state.messages, message].slice(-10_000);
           return { state: { ...s.state, messages } };
         });
       },
       stream: (p) => {
         const ev = p as StreamEvent;
-        set((s) => ({
-          streams: {
-            ...s.streams,
-            [ev.bot_id]: [...(s.streams[ev.bot_id] ?? []), ev].slice(-400),
-          },
-        }));
+        set((s) => {
+          const prev = s.streams[ev.bot_id] ?? [];
+          const last = prev[prev.length - 1];
+          // Coalesce consecutive streaming text/thinking chunks so long multi-step turns keep full tool history
+          if (last && ev.event.type === 'thinking_delta' && last.event.type === 'thinking_delta') {
+            const merged: StreamEvent = { ...ev, event: { type: 'thinking_delta', text: last.event.text + ev.event.text } };
+            return { streams: { ...s.streams, [ev.bot_id]: [...prev.slice(0, -1), merged] } };
+          }
+          if (last && ev.event.type === 'text_delta' && last.event.type === 'text_delta') {
+            const merged: StreamEvent = { ...ev, event: { type: 'text_delta', text: last.event.text + ev.event.text } };
+            return { streams: { ...s.streams, [ev.bot_id]: [...prev.slice(0, -1), merged] } };
+          }
+          return { streams: { ...s.streams, [ev.bot_id]: [...prev, ev].slice(-400) } };
+        });
       },
       error: (p) => get().toast(String((p as ChannelPayloads).message ?? '发生错误'), 'error'),
       'engine:exit': (p) => get().toast(`内置引擎进程退出：${JSON.stringify(p)}`, 'error'),

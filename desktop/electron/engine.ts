@@ -77,7 +77,7 @@ export class EngineBridge extends EventEmitter {
 
   private async spawnAndWait(): Promise<void> {
     const exe = engineExecutable();
-    this.proc = spawn(exe, ['--http', String(ENGINE_PORT)], {
+    this.proc = spawn(exe, ['--http', String(ENGINE_PORT), '--bot-studio'], {
       env: engineEnvironment(this.token, this.maxHops, this.spawnEnabled),
       cwd: path.dirname(exe),
       windowsHide: true,

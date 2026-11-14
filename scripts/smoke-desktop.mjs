@@ -14,8 +14,9 @@ const PACKAGED = process.argv.includes('--packaged');
 const ELECTRON = PACKAGED
   ? path.join(DESKTOP, 'release', 'win-unpacked', 'Agent Bot.exe')
   : path.join(DESKTOP, 'node_modules', 'electron', 'dist', 'electron.exe');
-const TOKEN_FILE = path.join(os.homedir(), '.nexus-bot-studio', 'engine-token.txt');
-const PORT = 16191;
+const DATA_HOME = process.env.NEXUS_BOT_DATA_HOME ?? path.join(os.homedir(), '.nexus-bot-studio');
+const TOKEN_FILE = path.join(DATA_HOME, 'engine-token.txt');
+const PORT = Number(process.env.NEXUS_BOT_ENGINE_PORT ?? '16191');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

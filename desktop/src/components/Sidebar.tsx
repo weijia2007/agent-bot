@@ -44,7 +44,7 @@ function RoomSwitcher({ rooms, active, onPick }: { rooms: Room[]; active: string
             onClick={() => { setOpen(false); useStudio.getState().setNewRoomOpen(true); }}
             className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-xs text-slate-400 hover:bg-white/5 hover:text-slate-100"
           >
-            <Plus size={13} /> 新建房间
+            <Plus size={13} /> 新建项目
           </button>
         </div>
       )}
@@ -55,6 +55,10 @@ function RoomSwitcher({ rooms, active, onPick }: { rooms: Room[]; active: string
 function BotRow({ bot, active, onPick, onMenu }: {
   bot: BotConfig; active: boolean; onPick: () => void; onMenu: (e: React.MouseEvent) => void;
 }): React.ReactNode {
+  const modelsCatalog = useStudio((s) => s.modelsCatalog);
+  const modelText = bot.model || bot.reasoning_effort
+    ? formatModelLabel(bot.engine_type, bot.model, modelsCatalog, bot.reasoning_effort)
+    : bot.role;
   return (
     <div
       onClick={onPick}
@@ -67,7 +71,7 @@ function BotRow({ bot, active, onPick, onMenu }: {
           {bot.is_supervisor && <Crown size={11} className="shrink-0 text-amber-400" />}
         </div>
         <div className="truncate text-[10.5px] text-slate-500">
-          {ENGINE_LABELS[bot.engine_type]} · {bot.model ? formatModelLabel(bot.engine_type, bot.model) : bot.role}
+          {ENGINE_LABELS[bot.engine_type]} · {modelText}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
@@ -85,7 +89,7 @@ function BotRow({ bot, active, onPick, onMenu }: {
 
 export default function Sidebar(): React.ReactNode {
   const {
-    state, activeRoom, activeBot, setActiveRoom, setActiveBot, setNewBotOpen, setInspectorTab, toast,
+    state, activeRoom, activeBot, modelsCatalog, setActiveRoom, setActiveBot, setNewBotOpen, setInspectorTab, toast,
   } = useStudio();
   const [menu, setMenu] = useState<{ bot: BotConfig; x: number; y: number } | null>(null);
   const [projectPick, setProjectPick] = useState(false);
@@ -140,7 +144,7 @@ export default function Sidebar(): React.ReactNode {
           <MessageSquare size={14} /> 群聊主厅
         </button>
 
-        <SectionTitle right={<span className="text-[10px] text-slate-600">{roomBots.length}</span>}>主管</SectionTitle>
+        <SectionTitle right={<span className="text-[10px] text-slate-600">{supervisor ? 1 : 0}</span>}>主管</SectionTitle>
         {supervisor ? (
           <div
             onClick={() => setActiveBot(supervisor.bot_id)}
@@ -155,7 +159,7 @@ export default function Sidebar(): React.ReactNode {
                   <Crown size={11} className="shrink-0 text-amber-400" />
                 </div>
                 <div className="truncate text-[10.5px] text-slate-500">
-                  {ENGINE_LABELS[supervisor.engine_type]} · {formatModelLabel(supervisor.engine_type, supervisor.model)}
+                  {ENGINE_LABELS[supervisor.engine_type]} · {formatModelLabel(supervisor.engine_type, supervisor.model, modelsCatalog, supervisor.reasoning_effort)}
                 </div>
               </div>
               <StatusDot status={supervisor.status} pulse={supervisor.status === 'working'} />
