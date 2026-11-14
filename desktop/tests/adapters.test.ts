@@ -174,4 +174,55 @@ describe('Session Adapters continuity and abort handling', () => {
     expect(result.ok).toBe(false);
     expect(result.uncertain).toBe(true);
   });
+
+  it('passes model override flags to Claude and Codex and extracts item.completed agent_message text', async () => {
+    const claudeArgs: string[][] = [];
+    const claudeSpawn = ((_cmd: string, args: string[]) => {
+      claudeArgs.push([...args]);
+      const proc = new FakeProc();
+      queueMicrotask(() => {
+        proc.stdout.write(JSON.stringify({ type: 'result', result: 'fallback answer' }) + '\n');
+        proc.emit('close', 0);
+      });
+      return proc as unknown as ChildProcess;
+    }) as unknown as typeof spawn;
+
+    const claude = new ClaudeSessionAdapter('tok-m', { spawnFn: claudeSpawn, findExe: () => 'claude.exe' });
+    const clRes = await claude.sendTurn(makeBot({ bot_id: 'cl-m', model: 'opus' }), 'hi', () => {});
+    expect(clRes.ok).toBe(true);
+    expect(clRes.text).toBe('fallback answer');
+    expect(claudeArgs[0]).toContain('--model');
+    expect(claudeArgs[0][claudeArgs[0].indexOf('--model') + 1]).toBe('opus');
+
+    const codexArgs: string[][] = [];
+    const codexEvents: AgentStreamEvent[] = [];
+    const codexSpawn = ((_cmd: string, args: string[]) => {
+      codexArgs.push([...args]);
+      const proc = new FakeProc();
+      queueMicrotask(() => {
+        proc.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'th_m1' }) + '\n');
+        proc.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'i1', type: 'reasoning', text: 'thinking...' } }) + '\n');
+        proc.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'i2', type: 'agent_message', text: 'Codex final reply' } }) + '\n');
+        proc.emit('close', 0);
+      });
+      return proc as unknown as ChildProcess;
+    }) as unknown as typeof spawn;
+
+    const codex = new CodexSessionAdapter('tok-cx', {
+      spawnFn: codexSpawn,
+      findEntry: () => ({ nodeExe: 'node.exe', codexJs: 'codex.js' }),
+    });
+    const cxRes = await codex.sendTurn(
+      makeBot({ bot_id: 'cx-m', engine_type: 'codex', model: 'gpt-5.4', external_session_id: 'th_m1' }),
+      'hi codex',
+      (e) => codexEvents.push(e),
+    );
+    expect(cxRes.ok).toBe(true);
+    expect(cxRes.text).toBe('Codex final reply');
+    expect(codexEvents.some((e) => e.type === 'text_delta' && e.text === 'Codex final reply')).toBe(true);
+    expect(codexArgs[0]).toContain('-m');
+    expect(codexArgs[0][codexArgs[0].indexOf('-m') + 1]).toBe('gpt-5.4');
+    // Resumed codex exec must NOT pass -C (only supported on fresh exec, rejected after `resume`)
+    expect(codexArgs[0]).not.toContain('-C');
+  });
 });

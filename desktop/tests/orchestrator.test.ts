@@ -155,4 +155,83 @@ describe('Orchestrator routing, hop guard, and lock synchronization', () => {
     expect(orch.getState().approvals.map((a) => a.id)).toEqual(['ap-2']);
     expect(orch.getState().locks.map((l) => l.id)).toEqual(['lk-2']);
   });
+
+  it('captures non-MCP bot text replies and errors into state.messages, skips duplicate when MCP reply exists, and updates model via setBotModel', async () => {
+    const orch = new Orchestrator();
+    const emitted: Array<{ ch: string; payload: unknown }> = [];
+    orch.setEmitter((ch, payload) => emitted.push({ ch, payload }));
+
+    const internal = orch as unknown as {
+      bots: Map<string, BotConfig>;
+      adapters: Map<string, { sendTurn: (...args: unknown[]) => Promise<{ ok: boolean; sessionId?: string; text?: string; error?: string }> }>;
+      state: ReturnType<Orchestrator['getState']>;
+      runTurn: (turn: {
+        botId: string;
+        prompt: string;
+        source: string;
+        messageId?: string;
+        traceId?: string;
+        hopCount?: number;
+        onEvent: (ev: unknown) => void;
+      }) => Promise<boolean>;
+    };
+
+    const bot: BotConfig = {
+      bot_id: 'bot-reply', display_name: 'Reply Bot', engine_type: 'claude', role: 'worker',
+      system_prompt: 'help', permission_mode: 'auto', workspace_mode: 'shared',
+      room: 'room-r', workspace: tempHome, is_supervisor: false, status: 'idle',
+      color: '#e9a23b', created_at: new Date().toISOString(), external_session_id: 'sess-r1',
+    };
+    internal.bots.set(bot.bot_id, bot);
+    internal.state.bots = [bot];
+
+    // 1. setBotModel updates and clears cleanly
+    const updated = orch.setBotModel(bot.bot_id, 'opus');
+    expect(updated?.model).toBe('opus');
+    expect(orch.setBotModel(bot.bot_id, '')?.model).toBeUndefined();
+
+    // 2. Non-MCP streamed reply automatically creates a visible RoomMessage
+    internal.adapters.set(bot.bot_id, {
+      sendTurn: async (_b: unknown, _p: unknown, onEvent: (ev: { type: string; text?: string }) => void) => {
+        onEvent({ type: 'text_delta', text: '这是自动捕获的 ' });
+        onEvent({ type: 'text_delta', text: 'Bot 回复' });
+        return { ok: true, sessionId: 'sess-r1', text: '这是自动捕获的 Bot 回复' };
+      },
+    });
+    const ok1 = await internal.runTurn({
+      botId: bot.bot_id, prompt: '你好', source: 'user', messageId: 'u-1', traceId: 'tr-1', hopCount: 0, onEvent: () => {},
+    });
+    expect(ok1).toBe(true);
+    const botReplies1 = orch.getState().messages.filter((m) => m.from === bot.bot_id && m.reply_to === 'u-1');
+    expect(botReplies1).toHaveLength(1);
+    expect(botReplies1[0].text).toBe('这是自动捕获的 Bot 回复');
+
+    // 3. When MCP reply already landed in state.messages during the turn, runTurn must NOT push a duplicate
+    internal.adapters.set(bot.bot_id, {
+      sendTurn: async (_b: unknown, _p: unknown, onEvent: (ev: { type: string; text?: string }) => void) => {
+        orch.getState().messages.push({
+          id: 'mcp-r2', kind: 'bot', from: bot.bot_id, to: 'user', reply_to: 'u-2',
+          room: 'room-r', text: 'MCP reply text', created: new Date().toISOString(), status: 'done',
+        });
+        onEvent({ type: 'text_delta', text: 'MCP reply text' });
+        return { ok: true, sessionId: 'sess-r1', text: 'MCP reply text' };
+      },
+    });
+    await internal.runTurn({
+      botId: bot.bot_id, prompt: '第二个问题', source: 'user', messageId: 'u-2', onEvent: () => {},
+    });
+    expect(orch.getState().messages.filter((m) => m.reply_to === 'u-2')).toHaveLength(1);
+
+    // 4. Turn failure pushes a visible system failure notice for the user
+    internal.adapters.set(bot.bot_id, {
+      sendTurn: async () => ({ ok: false, error: 'API quota exceeded' }),
+    });
+    const ok3 = await internal.runTurn({
+      botId: bot.bot_id, prompt: '第三个问题', source: 'user', messageId: 'u-3', onEvent: () => {},
+    });
+    expect(ok3).toBe(false);
+    const errMsgs = orch.getState().messages.filter((m) => m.reply_to === 'u-3' && m.kind === 'system');
+    expect(errMsgs).toHaveLength(1);
+    expect(errMsgs[0].text).toContain('API quota exceeded');
+  });
 });

@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
-  Bot, ChevronDown, Crown, FolderPlus, GitBranch, MoreVertical, Plus, RefreshCw, Settings2, Trash2, UserRoundCog,
+  Bot, ChevronDown, Crown, FolderPlus, GitBranch, MessageSquare, MoreVertical, Plus, RefreshCw, Settings2, Trash2, UserRoundCog,
 } from 'lucide-react';
 import { useStudio } from '../store';
-import type { BotConfig, Room } from '../types';
-import { BotAvatar, EngineBadge, SectionTitle, StatusDot } from './Common';
+import { ENGINE_LABELS, formatModelLabel, type BotConfig, type Room } from '../types';
+import { BotAvatar, SectionTitle, StatusDot } from './Common';
 
 function RoomSwitcher({ rooms, active, onPick }: { rooms: Room[]; active: string; onPick: (id: string) => void }): React.ReactNode {
   const [open, setOpen] = useState(false);
@@ -60,19 +60,14 @@ function BotRow({ bot, active, onPick, onMenu }: {
       onClick={onPick}
       className={`group flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors ${active ? 'bg-indigo-500/12 ring-1 ring-indigo-500/20' : 'hover:bg-white/[.04]'}`}
     >
-      <BotAvatar bot={bot} size={32} />
+      <BotAvatar bot={bot} size={28} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className="truncate text-[12.5px] font-medium text-slate-200">{bot.display_name}</span>
           {bot.is_supervisor && <Crown size={11} className="shrink-0 text-amber-400" />}
         </div>
-        <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
-          <span className="truncate">{bot.role}</span>
-          {bot.worktree_branch && (
-            <span className="flex items-center gap-0.5 truncate font-mono text-[9px] text-emerald-500/80" title={bot.worktree_branch}>
-              <GitBranch size={9} /> {bot.worktree_branch.split('/').pop()}
-            </span>
-          )}
+        <div className="truncate text-[10.5px] text-slate-500">
+          {ENGINE_LABELS[bot.engine_type]} · {bot.model ? formatModelLabel(bot.engine_type, bot.model) : bot.role}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
@@ -135,44 +130,51 @@ export default function Sidebar(): React.ReactNode {
       </button>
 
       <div className="mt-3 flex-1 overflow-y-auto px-2.5 pb-3">
-        <SectionTitle right={<span className="text-[10px] text-slate-600">{roomBots.length} 个 Bot</span>}>主管 PRIMARY</SectionTitle>
+        <button
+          type="button"
+          onClick={() => setActiveBot(null)}
+          className={`mb-3 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-colors ${
+            !activeBot ? 'bg-indigo-500/15 text-indigo-200 ring-1 ring-indigo-500/25' : 'text-slate-400 hover:bg-white/[.04] hover:text-slate-200'
+          }`}
+        >
+          <MessageSquare size={14} /> 群聊主厅
+        </button>
+
+        <SectionTitle right={<span className="text-[10px] text-slate-600">{roomBots.length}</span>}>主管</SectionTitle>
         {supervisor ? (
           <div
             onClick={() => setActiveBot(supervisor.bot_id)}
-            className={`group relative cursor-pointer rounded-xl border p-2.5 transition-colors ${activeBot === supervisor.bot_id ? 'border-indigo-500/40 bg-indigo-500/10' : 'border-amber-500/15 bg-amber-500/[.045] hover:border-amber-500/30'}`}
+            className={`group relative cursor-pointer rounded-xl border p-2.5 transition-colors ${activeBot === supervisor.bot_id ? 'border-indigo-500/40 bg-indigo-500/10' : 'border-white/8 bg-white/[.02] hover:border-white/15'}`}
             onContextMenu={(e) => showMenu(e, supervisor)}
           >
             <div className="flex items-center gap-2.5">
-              <BotAvatar bot={supervisor} size={38} />
+              <BotAvatar bot={supervisor} size={30} />
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1">
-                  <span className="truncate text-[13px] font-semibold text-slate-100">{supervisor.display_name}</span>
-                  <Crown size={12} className="text-amber-400" />
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-[12.5px] font-semibold text-slate-100">{supervisor.display_name}</span>
+                  <Crown size={11} className="shrink-0 text-amber-400" />
                 </div>
-                <div className="mt-0.5"><EngineBadge engine={supervisor.engine_type} /></div>
+                <div className="truncate text-[10.5px] text-slate-500">
+                  {ENGINE_LABELS[supervisor.engine_type]} · {formatModelLabel(supervisor.engine_type, supervisor.model)}
+                </div>
               </div>
-              <button type="button" title="更多" onClick={(e) => showMenu(e, supervisor)} className="text-slate-600 hover:text-slate-300">
-                <MoreVertical size={14} />
+              <StatusDot status={supervisor.status} pulse={supervisor.status === 'working'} />
+              <button type="button" title="更多" onClick={(e) => showMenu(e, supervisor)} className="hidden text-slate-600 hover:text-slate-300 group-hover:block">
+                <MoreVertical size={13} />
               </button>
-            </div>
-            <div className="mt-2.5 flex items-center justify-between border-t border-white/5 pt-2">
-              <StatusDot status={supervisor.status} />
-              <span className="mono truncate text-slate-600" title={supervisor.external_session_id}>
-                {supervisor.external_session_id ? `会话 ${supervisor.external_session_id.slice(0, 8)}` : '未绑定会话'}
-              </span>
             </div>
           </div>
         ) : (
           <button
             type="button" onClick={() => setNewBotOpen(true)}
-            className="w-full rounded-xl border border-dashed border-white/10 px-3 py-4 text-xs text-slate-500 hover:border-amber-500/40 hover:text-amber-300"
+            className="w-full rounded-xl border border-dashed border-white/10 px-3 py-3 text-xs text-slate-500 hover:border-amber-500/40 hover:text-amber-300"
           >
-            + 指定一个主管 Bot
+            + 指定主管 Bot
           </button>
         )}
 
         <div className="mt-4">
-          <SectionTitle>团队 TEAM</SectionTitle>
+          <SectionTitle>成员</SectionTitle>
           <div className="space-y-0.5">
             {workers.map((bot) => (
               <BotRow

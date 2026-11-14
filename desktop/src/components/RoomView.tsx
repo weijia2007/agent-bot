@@ -3,6 +3,7 @@ import { ArrowRight, AtSign, CheckCircle2, CornerDownLeft, Paperclip, Search, Se
 import { useStudio } from '../store';
 import type { BotConfig, RoomMessage, SearchHit } from '../types';
 import { BotAvatar, EmptyState, EngineBadge, formatTime } from './Common';
+import { extractLiveTurnStream, ModelPicker } from './ModelPicker';
 
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   queued: { label: '排队中', cls: 'text-amber-300 bg-amber-500/10' },
@@ -53,24 +54,23 @@ function MessageCard({ message, bots, onPickBot }: {
   }
 
   return (
-    <div className="animate-slideIn flex gap-2.5 py-1.5">
-      {from ? <BotAvatar bot={from} size={30} /> : <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-white/5 text-slate-500"><Sparkles size={14} /></div>}
-      <div className="min-w-0 max-w-[82%] flex-1">
-        <div className="mb-1 flex flex-wrap items-center gap-2 text-[10.5px]">
-          <button type="button" onClick={() => from && onPickBot(from.bot_id)} className="font-medium text-slate-300 hover:text-indigo-300">{from?.display_name ?? message.from}</button>
-          {from && <EngineBadge engine={from.engine_type} />}
+    <div className="animate-slideIn flex gap-3 py-1.5">
+      {from ? <BotAvatar bot={from} size={28} /> : <div className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-lg bg-white/5 text-slate-500"><Sparkles size={14} /></div>}
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px]">
+          <button type="button" onClick={() => from && onPickBot(from.bot_id)} className="font-medium text-slate-200 hover:text-indigo-300">{from?.display_name ?? message.from}</button>
           {to && (
             <span className="flex items-center gap-1 text-slate-500">
               <ArrowRight size={11} />
               <button type="button" onClick={() => onPickBot(to.bot_id)} className="text-slate-400 hover:text-indigo-300">@{to.display_name}</button>
             </span>
           )}
-          {from?.is_supervisor && <span className="chip bg-amber-500/10 text-amber-300">主管派单</span>}
-          {status && <span className={`chip ${status.cls}`}>{status.label}</span>}
-          {typeof message.hop_count === 'number' && <span className="chip bg-white/5 text-slate-500">hop {message.hop_count}</span>}
-          <span className="mono ml-auto text-slate-600">{formatTime(message.created)}</span>
+          {from?.is_supervisor && <span className="text-[10px] text-amber-300/80">主管</span>}
+          {status && message.status !== 'delivered' && message.status !== 'done' && <span className={`chip ${status.cls}`}>{status.label}</span>}
+          {typeof message.hop_count === 'number' && message.hop_count > 0 && <span className="chip bg-white/5 text-slate-500">hop {message.hop_count}</span>}
+          <span className="mono ml-auto text-[10px] text-slate-600">{formatTime(message.created)}</span>
         </div>
-        <div className="card px-3.5 py-2.5 text-[12.5px] leading-relaxed text-slate-200 whitespace-pre-wrap break-words">
+        <div className="rounded-xl border border-white/6 bg-white/[.02] px-3.5 py-2.5 text-[13.5px] leading-relaxed text-slate-200 whitespace-pre-wrap break-words select-text">
           {message.text}
         </div>
         {message.progress && <div className="mt-1.5 flex items-center gap-1.5 text-[10.5px] text-slate-500"><CheckCircle2 size={11} />{message.progress}</div>}
@@ -92,7 +92,7 @@ function MessageCard({ message, bots, onPickBot }: {
 }
 
 export default function RoomView(): React.ReactNode {
-  const { state, activeRoom, setActiveBot, toast } = useStudio();
+  const { state, streams, activeRoom, setActiveBot, setBotModel, toast } = useStudio();
   const [text, setText] = useState('');
   const [selectedTarget, setSelectedTarget] = useState('');
   const [mention, setMention] = useState<{ query: string; index: number } | null>(null);
@@ -109,6 +109,10 @@ export default function RoomView(): React.ReactNode {
   const bots = useMemo(() => state?.bots.filter((b) => b.room === activeRoom) ?? [], [state?.bots, activeRoom]);
   const workingBots = useMemo(() => bots.filter((b) => b.status === 'working' || b.status === 'queued'), [bots]);
   const effectiveTarget = useMemo(() => (selectedTarget && bots.some((b) => b.bot_id === selectedTarget) ? selectedTarget : ''), [selectedTarget, bots]);
+  const composerBot = useMemo(
+    () => bots.find((b) => b.bot_id === effectiveTarget) ?? bots.find((b) => b.is_supervisor) ?? bots[0],
+    [bots, effectiveTarget],
+  );
   const messages = useMemo(() => state?.messages.filter((m) => m.room === activeRoom) ?? [], [state?.messages, activeRoom]);
   const suggestions = useMemo(() => {
     if (!mention) return [];
@@ -239,101 +243,122 @@ export default function RoomView(): React.ReactNode {
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4">
-        {messages.length === 0 ? (
-          <EmptyState
-            icon={<Sparkles size={24} />}
-            title="房间已就绪"
-            hint="在下方输入任务需求，默认发送给主管 Bot。输入 @ 可点名任意 Bot；主管会把任务拆解并派发给不同底座的子 Bot，所有互发消息实时出现在这里。"
-          />
-        ) : messages.map((m) => <MessageCard key={m.id} message={m} bots={bots} onPickBot={setActiveBot} />)}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-6">
+        <div className="mx-auto max-w-3xl space-y-2">
+          {messages.length === 0 ? (
+            <EmptyState
+              icon={<Sparkles size={22} />}
+              title="房间已就绪"
+              hint="在下方输入需求发给团队，或点击左侧任意 Bot 进行单聊。输入 @ 可点名指定成员。"
+            />
+          ) : messages.map((m) => <MessageCard key={m.id} message={m} bots={bots} onPickBot={setActiveBot} />)}
+
+          {workingBots.map((b) => {
+            const live = extractLiveTurnStream(streams[b.bot_id] ?? []);
+            return (
+              <div
+                key={`live-${b.bot_id}`}
+                onClick={() => setActiveBot(b.bot_id)}
+                className="animate-slideIn flex cursor-pointer items-start gap-3 py-1.5 opacity-95 hover:opacity-100"
+                title="点击打开单 Bot 对话查看详情"
+              >
+                <BotAvatar bot={b} size={28} />
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 flex items-center gap-2 text-[11px] text-slate-400">
+                    <span className="font-medium text-slate-200">{b.display_name}</span>
+                    <span className="text-indigo-300">{b.status === 'queued' ? '排队中…' : '正在生成…'}</span>
+                    {live.activeTool && <span className="text-[10.5px] text-slate-500">· {live.activeTool}</span>}
+                  </div>
+                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/[.04] px-3.5 py-2 text-[13px] leading-relaxed text-slate-300 whitespace-pre-wrap break-words">
+                    {live.text || (live.thinking ? '正在思考推理…' : '正在等待响应…')}
+                    <span className="ml-1 inline-block h-3 w-1.5 animate-pulse rounded-sm bg-indigo-400 align-middle" />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      <div className="relative border-t border-white/5 bg-ink-900/60 px-4 py-3">
-        {workingBots.length > 0 && (
-          <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px]">
-            <span className="text-slate-500">运行中：</span>
-            {workingBots.map((b) => (
-              <button
-                key={b.bot_id}
-                type="button"
-                onClick={() => setActiveBot(b.bot_id)}
-                className="chip border border-indigo-500/25 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20"
-                title="点击打开单 Bot 实时输出透视"
-              >
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-400" />
-                {b.display_name}（{b.status === 'working' ? '思考/执行' : '排队中'}）
-              </button>
-            ))}
-          </div>
-        )}
-        {attachments.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            {attachments.map((a) => (
-              <span key={a} className="chip bg-white/5 text-slate-400">
-                <Paperclip size={10} />{a.split(/[\\/]/).pop()}
-                <button type="button" onClick={() => setAttachments((list) => list.filter((x) => x !== a))}><XCircle size={11} /></button>
-              </span>
-            ))}
-          </div>
-        )}
-        {mention && suggestions.length > 0 && (
-          <div className="absolute bottom-full left-4 z-20 mb-1 w-64 rounded-lg border border-white/10 bg-ink-800 p-1 shadow-2xl">
-            <div className="px-2 py-1 text-[10px] text-slate-500">点名 Bot（默认发主管）</div>
-            {suggestions.map((b) => (
-              <button key={b.bot_id} type="button" onClick={() => insertMention(b)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-slate-300 hover:bg-white/5">
-                <BotAvatar bot={b} size={20} /><span className="flex-1">{b.display_name}</span><EngineBadge engine={b.engine_type} />
-              </button>
-            ))}
-          </div>
-        )}
-        <div
-          className="rounded-xl border border-white/8 bg-ink-950/70 focus-within:border-indigo-500/40"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            const files = Array.from(e.dataTransfer.files).map((f) => (f as File & { path?: string }).path).filter((p): p is string => Boolean(p));
-            if (files.length) setAttachments((list) => [...list, ...files].slice(0, 8));
-          }}
-        >
-          <textarea
-            ref={inputRef} value={text} rows={3}
-            onChange={(e) => onChange(e.target.value, e.target.selectionStart)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
-              if (e.key === 'Escape') setMention(null);
-            }}
-            className="w-full bg-transparent px-3.5 pt-3 pb-1 text-[12.5px] leading-relaxed text-slate-100 placeholder:text-slate-600 outline-none"
-            placeholder="给团队下达任务… 输入 @ 点名某个 Bot，Shift+Enter 换行"
-          />
-          <div className="flex items-center gap-2 px-3 pb-2.5">
-            <select
-              value={effectiveTarget}
-              onChange={(e) => setSelectedTarget(e.target.value)}
-              title="选择接收任务的目标 Bot（默认发给主管）"
-              className="rounded-md border border-white/8 bg-ink-900 px-2 py-1 text-[11px] text-slate-300 outline-none focus:border-indigo-500/40"
-            >
-              <option value="">自动派单（主管）</option>
-              {bots.map((b) => (
-                <option key={b.bot_id} value={b.bot_id}>
-                  @{b.display_name} ({b.engine_type})
-                </option>
+      <div className="relative px-4 pb-4 pt-1">
+        <div className="mx-auto max-w-3xl">
+          {attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {attachments.map((a) => (
+                <span key={a} className="chip bg-white/5 text-slate-400">
+                  <Paperclip size={10} />{a.split(/[\\/]/).pop()}
+                  <button type="button" onClick={() => setAttachments((list) => list.filter((x) => x !== a))}><XCircle size={11} /></button>
+                </span>
               ))}
-            </select>
-            <button type="button" className="btn-ghost px-2 py-1" title="输入 @ 触发补全" onClick={() => { setText((t) => `${t}@`); inputRef.current?.focus(); }}>
-              <AtSign size={13} /> 提及
-            </button>
-            <label className="btn-ghost cursor-pointer px-2 py-1" title="附加文件 / 截图">
-              <Paperclip size={13} /> 附件
-              <input type="file" multiple className="hidden" onChange={(e) => {
-                const files = Array.from(e.target.files ?? []).map((f) => (f as File & { path?: string }).path).filter((p): p is string => Boolean(p));
-                if (files.length) setAttachments((list) => [...list, ...files].slice(0, 8));
-              }} />
-            </label>
-            <span className="mono ml-auto text-slate-600">{text.length} 字</span>
-            <button type="button" className="btn-primary px-3.5" disabled={!text.trim() || busy} onClick={() => void send()}>
-              <Send size={13} /> 发送 <CornerDownLeft size={11} className="opacity-60" />
-            </button>
+            </div>
+          )}
+          {mention && suggestions.length > 0 && (
+            <div className="absolute bottom-full left-4 z-20 mb-1 w-64 rounded-lg border border-white/10 bg-ink-800 p-1 shadow-2xl">
+              <div className="px-2 py-1 text-[10px] text-slate-500">点名 Bot（默认发主管）</div>
+              {suggestions.map((b) => (
+                <button key={b.bot_id} type="button" onClick={() => insertMention(b)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-slate-300 hover:bg-white/5">
+                  <BotAvatar bot={b} size={20} /><span className="flex-1">{b.display_name}</span><EngineBadge engine={b.engine_type} />
+                </button>
+              ))}
+            </div>
+          )}
+          <div
+            className="rounded-2xl border border-white/10 bg-ink-900/80 focus-within:border-indigo-500/40 transition-colors"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const files = Array.from(e.dataTransfer.files).map((f) => (f as File & { path?: string }).path).filter((p): p is string => Boolean(p));
+              if (files.length) setAttachments((list) => [...list, ...files].slice(0, 8));
+            }}
+          >
+            <textarea
+              ref={inputRef} value={text} rows={2}
+              onChange={(e) => onChange(e.target.value, e.target.selectionStart)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+                if (e.key === 'Escape') setMention(null);
+              }}
+              className="w-full bg-transparent px-4 pt-3 pb-1 text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-600 outline-none resize-none"
+              placeholder="下达任务给团队… 输入 @ 点名 Bot"
+            />
+            <div className="flex items-center gap-1.5 px-3 pb-2.5">
+              <select
+                value={effectiveTarget}
+                onChange={(e) => setSelectedTarget(e.target.value)}
+                title="选择接收任务的目标 Bot（默认发给主管）"
+                className="rounded-lg border border-white/10 bg-white/[.04] px-2 py-1 text-[11px] text-slate-300 outline-none focus:border-indigo-500/40"
+              >
+                <option value="">自动派单（主管）</option>
+                {bots.map((b) => (
+                  <option key={b.bot_id} value={b.bot_id}>
+                    @{b.display_name}
+                  </option>
+                ))}
+              </select>
+              {composerBot && (
+                <ModelPicker
+                  engine={composerBot.engine_type}
+                  model={composerBot.model}
+                  direction="up"
+                  align="left"
+                  compact
+                  onChange={(next) => { void setBotModel(composerBot.bot_id, next); }}
+                />
+              )}
+              <button type="button" className="btn-ghost px-2 py-1 text-[11px]" title="输入 @ 触发补全" onClick={() => { setText((t) => `${t}@`); inputRef.current?.focus(); }}>
+                <AtSign size={12} /> 提及
+              </button>
+              <label className="btn-ghost cursor-pointer px-2 py-1 text-[11px]" title="附加文件 / 截图">
+                <Paperclip size={12} /> 附件
+                <input type="file" multiple className="hidden" onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []).map((f) => (f as File & { path?: string }).path).filter((p): p is string => Boolean(p));
+                  if (files.length) setAttachments((list) => [...list, ...files].slice(0, 8));
+                }} />
+              </label>
+              <button type="button" className="btn-primary ml-auto px-3.5 py-1.5 rounded-xl" disabled={!text.trim() || busy} onClick={() => void send()}>
+                <Send size={12} /> 发送 <CornerDownLeft size={10} className="opacity-60" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

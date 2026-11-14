@@ -12,7 +12,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DESKTOP = path.join(ROOT, 'desktop');
 const PACKAGED = process.argv.includes('--packaged');
 const ELECTRON = PACKAGED
-  ? path.join(DESKTOP, 'release', 'win-unpacked', 'NexusBot Studio.exe')
+  ? path.join(DESKTOP, 'release', 'win-unpacked', 'Agent Bot.exe')
   : path.join(DESKTOP, 'node_modules', 'electron', 'dist', 'electron.exe');
 const TOKEN_FILE = path.join(os.homedir(), '.nexus-bot-studio', 'engine-token.txt');
 const PORT = 16191;

@@ -7,6 +7,7 @@ export interface BotConfig {
   bot_id: string;
   display_name: string;
   engine_type: EngineType;
+  model?: string;
   role: string;
   system_prompt: string;
   permission_mode: PermissionMode;
@@ -175,6 +176,37 @@ export const ENGINE_LABELS: Record<EngineType, string> = {
   antigravity: 'Antigravity',
 };
 
+export interface ModelOption {
+  id: string;
+  label: string;
+}
+
+export const ENGINE_MODELS: Record<EngineType, ModelOption[]> = {
+  claude: [
+    { id: '', label: '默认模型' },
+    { id: 'sonnet', label: 'Sonnet' },
+    { id: 'opus', label: 'Opus' },
+    { id: 'haiku', label: 'Haiku' },
+  ],
+  codex: [
+    { id: '', label: '默认模型' },
+    { id: 'gpt-5.4', label: 'GPT-5.4' },
+    { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { id: 'gpt-5-codex', label: 'GPT-5 Codex' },
+    { id: 'o4-mini', label: 'o4-mini' },
+  ],
+  antigravity: [
+    { id: '', label: '跟随 IDE 模型' },
+  ],
+};
+
+export function formatModelLabel(engine: EngineType, model?: string): string {
+  const value = model?.trim() ?? '';
+  if (!value) return ENGINE_MODELS[engine]?.[0]?.label ?? '默认模型';
+  const preset = ENGINE_MODELS[engine]?.find((m) => m.id === value);
+  return preset ? preset.label : value;
+}
+
 export interface StudioState {
   rooms: Room[];
   bots: BotConfig[];
@@ -190,6 +222,7 @@ export interface StudioState {
 export interface CreateBotInput {
   display_name: string;
   engine_type: EngineType;
+  model?: string;
   role: string;
   roleTemplate: string;
   system_prompt: string;

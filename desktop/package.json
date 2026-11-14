@@ -1,6 +1,6 @@
 {
-  "name": "nexusbot-studio",
-  "productName": "NexusBot Studio",
+  "name": "agent-bot",
+  "productName": "Agent Bot",
   "version": "0.1.0",
   "description": "Local multi-agent collaboration desktop workbench for Claude Code, Codex and Antigravity",
   "private": true,

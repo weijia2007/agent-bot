@@ -6,7 +6,7 @@ import { DEV_SERVER } from './config';
 import { StudioWebSocketServer } from './ws';
 
 delete process.env.ELECTRON_RUN_AS_NODE;
-if (process.platform === 'win32') app.setAppUserModelId('com.nexusbot.studio');
+if (process.platform === 'win32') app.setAppUserModelId('com.agentbot.app');
 
 let win: BrowserWindow | null = null;
 const orchestrator = new Orchestrator();
@@ -36,7 +36,7 @@ async function createWindow(): Promise<void> {
     minWidth: 1120,
     minHeight: 700,
     backgroundColor: '#0b0d12',
-    title: 'NexusBot Studio',
+    title: 'Agent Bot',
     ...(icon ? { icon } : {}),
     show: false,
     webPreferences: {
@@ -64,6 +64,7 @@ function handlers(): Record<string, (...args: never[]) => Promise<unknown>> {
     createBot: async (input: never) => o.createBot(input as never),
     deleteBot: async (botId: string) => { await o.deleteBot(botId); return true; },
     reconnectBot: async (botId: string) => o.reconnectBot(botId),
+    setBotModel: async (botId: string, model: string) => o.setBotModel(botId, model),
     setSupervisor: async (botId: string) => { await o.setSupervisor(botId); return true; },
     sendMessage: async (room: string, text: string, target: string | null) => o.sendMessage(room, text, target ?? undefined),
     sendDirect: async (botId: string, text: string, room: string) => o.sendDirect(botId, text, room),

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const desktopPkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const targetExe = path.join(desktopPkgDir, 'release', 'win-unpacked', 'NexusBot Studio.exe');
+const targetExe = path.join(desktopPkgDir, 'release', 'win-unpacked', 'Agent Bot.exe');
 const iconPath = path.join(desktopPkgDir, 'release', 'win-unpacked', 'resources', 'icon.ico');
 
 if (!fs.existsSync(targetExe)) {
@@ -26,14 +26,18 @@ const windowsDesktop = execFileSync(
 const desktopDir = [windowsDesktop, ...candidates].find((dir) => dir && fs.existsSync(dir));
 if (!desktopDir) throw new Error('Unable to locate Desktop directory');
 
-const shortcutPath = path.join(desktopDir, 'NexusBot Studio.lnk');
+const shortcutPath = path.join(desktopDir, 'Agent Bot.lnk');
+const legacyShortcut = path.join(desktopDir, 'NexusBot Studio.lnk');
+if (fs.existsSync(legacyShortcut)) {
+  try { fs.unlinkSync(legacyShortcut); } catch { /* ignore if locked */ }
+}
 const ps = `
 $ws = New-Object -ComObject WScript.Shell
 $sc = $ws.CreateShortcut($env:NBS_SHORTCUT_PATH)
 $sc.TargetPath = $env:NBS_TARGET_EXE
 $sc.WorkingDirectory = $env:NBS_WORK_DIR
 if (Test-Path $env:NBS_ICON_PATH) { $sc.IconLocation = "$env:NBS_ICON_PATH,0" }
-$sc.Description = 'NexusBot Studio - Multi-Agent Desktop Command Center'
+$sc.Description = 'Agent Bot - Multi-Agent Desktop'
 $sc.Save()
 `;
 

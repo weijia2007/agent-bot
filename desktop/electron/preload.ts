@@ -20,6 +20,7 @@ const api = {
   createBot: (input: unknown) => invoke('createBot', input),
   deleteBot: (botId: string) => invoke('deleteBot', botId),
   reconnectBot: (botId: string) => invoke('reconnectBot', botId),
+  setBotModel: (botId: string, model: string) => invoke('setBotModel', botId, model),
   setSupervisor: (botId: string) => invoke('setSupervisor', botId),
   sendMessage: (room: string, text: string, target?: string) => invoke('sendMessage', room, text, target ?? null),
   sendDirect: (botId: string, text: string, room: string) => invoke('sendDirect', botId, text, room),

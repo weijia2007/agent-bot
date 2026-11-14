@@ -4,11 +4,11 @@ import crypto from 'node:crypto';
 import { EngineBridge } from '../engine';
 import { DATA_HOME, STATE_FILE, ensureDirs } from '../config';
 import { createAdapter, probeEngines, type AgentAdapter } from '../adapters';
-import { BotScheduler } from './scheduler';
+import { BotScheduler, type QueuedTurn } from './scheduler';
 import { createWorktree, removeWorktree, collectDiffs, mergeToMain, resetWorktree, worktreeStatus } from './worktree';
 import { supervisorPrompt } from './supervisor';
 import type {
-  ApprovalRequest, BotConfig, BotStatus, CreateBotInput, DiffEntry, EngineEvent, EngineHealth,
+  AgentStreamEvent, ApprovalRequest, BotConfig, BotStatus, CreateBotInput, DiffEntry, EngineEvent, EngineHealth,
   EngineType, FileLock, HopPause, QuotaState, Room, RoomMessage, SearchHit, StreamEvent, StudioState,
 } from '../../src/types';
 
@@ -55,7 +55,7 @@ export class Orchestrator {
       void this.engine.setBotStatus(botId, status).catch(() => undefined);
     };
     this.scheduler.onQueueChange = (botId, depth) => this.emit('bot:queue', { botId, depth });
-    this.scheduler.setRunner((turn) => this.runTurn(turn.botId, turn.prompt, turn.onEvent));
+    this.scheduler.setRunner((turn) => this.runTurn(turn));
 
     for (const bot of this.state.bots) {
       this.bots.set(bot.bot_id, bot);
@@ -166,6 +166,7 @@ export class Orchestrator {
       bot_id: botId,
       display_name: input.display_name.trim() || botId,
       engine_type: input.engine_type,
+      model: input.model?.trim() || undefined,
       role: input.role || input.roleTemplate,
       system_prompt: input.system_prompt,
       permission_mode: input.permission_mode,
@@ -312,6 +313,18 @@ export class Orchestrator {
     }
   }
 
+  setBotModel(botId: string, model: string): BotConfig | null {
+    const bot = this.bots.get(botId);
+    if (!bot) return null;
+    const trimmed = model.trim();
+    bot.model = trimmed || undefined;
+    this.state.bots = [...this.bots.values()];
+    this.persist();
+    this.emit('bots', this.state.bots);
+    void this.engine.registerBot(bot).catch(() => undefined);
+    return bot;
+  }
+
   // ---------------------------------------------------------------- messaging
 
   async sendMessage(room: string, text: string, target?: string): Promise<RoomMessage> {
@@ -362,6 +375,7 @@ export class Orchestrator {
     }
     this.scheduler.enqueue({
       botId, prompt, source,
+      messageId: meta?.messageId,
       traceId: meta?.traceId, hopCount: meta?.hopCount,
       onEvent: (event) => {
         const stream: StreamEvent = { bot_id: botId, at: new Date().toISOString(), event };
@@ -388,16 +402,54 @@ export class Orchestrator {
     });
   }
 
-  private async runTurn(botId: string, prompt: string, onEvent: (ev: import('../../src/types').AgentStreamEvent) => void): Promise<boolean> {
+  private async runTurn(turn: QueuedTurn): Promise<boolean> {
+    const { botId, prompt, onEvent } = turn;
     const bot = this.bots.get(botId);
     const adapter = this.adapters.get(botId);
     if (!bot || !adapter) return false;
+    const expectedTo = turn.source === 'user' ? 'user' : turn.source;
     if (!bot.external_session_id) {
-      onEvent({ type: 'error', message: '该 Bot 未绑定真实底层会话，无法执行；请检查引擎健康面板' });
+      const errMsg = '该 Bot 未绑定真实底层会话，无法执行；请点击重连或检查引擎健康面板';
+      onEvent({ type: 'error', message: errMsg });
+      this.pushMessage({
+        id: crypto.randomUUID(),
+        kind: 'system',
+        from: bot.bot_id,
+        to: expectedTo,
+        reply_to: turn.messageId,
+        room: bot.room,
+        text: errMsg,
+        created: new Date().toISOString(),
+        status: 'uncertain',
+        trace_id: turn.traceId,
+      });
       return false;
     }
+
+    let streamedText = '';
+    let lastError = '';
+    const turnStartedAt = Date.now();
+    const wrappedOnEvent = (ev: AgentStreamEvent): void => {
+      if (ev.type === 'text_delta' && ev.text) streamedText += ev.text;
+      else if (ev.type === 'error' && ev.message) lastError = ev.message;
+      onEvent(ev);
+    };
+
+    const hasBotReply = (): boolean => this.state.messages.some((m) =>
+      m.room === bot.room
+      && m.from === bot.bot_id
+      && m.kind === 'bot'
+      && (
+        (turn.messageId && m.reply_to === turn.messageId)
+        || (
+          !m.reply_to
+          && m.to === expectedTo
+          && Date.parse(m.created) >= turnStartedAt
+        )
+      ));
+
     try {
-      const result = await adapter.sendTurn(bot, prompt, onEvent);
+      const result = await adapter.sendTurn(bot, prompt, wrappedOnEvent);
       if (result.sessionId && result.sessionId !== bot.external_session_id) {
         bot.external_session_id = result.sessionId;
         this.state.bots = [...this.bots.values()];
@@ -405,10 +457,71 @@ export class Orchestrator {
         this.emit('bots', this.state.bots);
         void this.engine.registerBot(bot).catch(() => undefined);
       }
-      if (!result.ok) onEvent({ type: 'error', message: result.error ?? 'turn failed', uncertain: result.uncertain });
+      if (!result.ok) {
+        onEvent({ type: 'error', message: result.error ?? 'turn failed', uncertain: result.uncertain });
+      }
+
+      const cleanResult = result.text && !/^\s*\{\s*"(response|conversationId|error)"/.test(result.text)
+        ? result.text.trim()
+        : '';
+      const replyText = streamedText.trim() || cleanResult;
+
+      if (!hasBotReply()) {
+        if (replyText) {
+          this.pushMessage({
+            id: crypto.randomUUID(),
+            kind: 'bot',
+            from: bot.bot_id,
+            to: expectedTo,
+            reply_to: turn.messageId,
+            room: bot.room,
+            text: replyText,
+            created: new Date().toISOString(),
+            status: result.ok ? 'done' : 'uncertain',
+            trace_id: turn.traceId,
+            hop_count: turn.hopCount,
+          });
+        } else if (!result.ok) {
+          this.pushMessage({
+            id: crypto.randomUUID(),
+            kind: 'system',
+            from: bot.bot_id,
+            to: expectedTo,
+            reply_to: turn.messageId,
+            room: bot.room,
+            text: `执行失败：${(result.error ?? lastError) || '底层引擎未返回内容'}`,
+            created: new Date().toISOString(),
+            status: 'uncertain',
+            trace_id: turn.traceId,
+          });
+        }
+      }
+      if (result.ok && turn.messageId) {
+        const orig = this.state.messages.find((m) => m.id === turn.messageId);
+        if (orig && orig.status !== 'done') {
+          orig.status = 'done';
+          this.emit('message', orig);
+          this.persist();
+        }
+      }
       return result.ok;
     } catch (e) {
-      onEvent({ type: 'error', message: (e as Error).message });
+      const msg = (e as Error).message;
+      onEvent({ type: 'error', message: msg });
+      if (!hasBotReply()) {
+        this.pushMessage({
+          id: crypto.randomUUID(),
+          kind: 'system',
+          from: bot.bot_id,
+          to: expectedTo,
+          reply_to: turn.messageId,
+          room: bot.room,
+          text: `执行异常：${msg}`,
+          created: new Date().toISOString(),
+          status: 'uncertain',
+          trace_id: turn.traceId,
+        });
+      }
       return false;
     }
   }

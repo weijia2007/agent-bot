@@ -5,6 +5,7 @@ export interface QueuedTurn {
   botId: string;
   prompt: string;
   source: string;
+  messageId?: string;
   traceId?: string;
   hopCount?: number;
   onEvent: (ev: AgentStreamEvent) => void;

@@ -124,6 +124,7 @@ export class ClaudeSessionAdapter implements AgentAdapter {
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
       '--verbose',
+      ...(bot.model ? ['--model', bot.model] : []),
       session.firstTurn ? '--session-id' : '--resume', session.id,
       '--mcp-config', session.mcpConfig,
       '--strict-mcp-config',
@@ -140,6 +141,7 @@ export class ClaudeSessionAdapter implements AgentAdapter {
       });
       this.running.set(bot.bot_id, proc);
       let text = '';
+      let fallbackResult = '';
       let finished = false;
       let completedEmitted = false;
       let stderr = '';
@@ -171,7 +173,7 @@ export class ClaudeSessionAdapter implements AgentAdapter {
         while (nl >= 0) {
           const line = buffer.slice(0, nl).trim();
           buffer = buffer.slice(nl + 1);
-          if (line) this.parseLine(line, emit, (delta) => { text += delta; });
+          if (line) this.parseLine(line, emit, (delta) => { text += delta; }, (res) => { fallbackResult = res; });
           nl = buffer.indexOf('\n');
         }
       });
@@ -192,8 +194,12 @@ export class ClaudeSessionAdapter implements AgentAdapter {
         }
         session.firstTurn = false;
         if (code === 0) {
-          emit({ type: 'turn_completed', summary: text.slice(-2000) });
-          done({ ok: true, sessionId: session.id, text });
+          const finalText = text.trim() ? text : fallbackResult;
+          if (!text.trim() && fallbackResult.trim()) {
+            emit({ type: 'text_delta', text: fallbackResult });
+          }
+          emit({ type: 'turn_completed', summary: finalText.slice(-2000) });
+          done({ ok: true, sessionId: session.id, text: finalText });
         } else {
           emit({ type: 'error', message: stderr.slice(-1200) || `exit ${code}` });
           done({ ok: false, sessionId: session.id, error: stderr.slice(-1200) || `claude exited ${code}` });
@@ -210,7 +216,7 @@ export class ClaudeSessionAdapter implements AgentAdapter {
     });
   }
 
-  private parseLine(line: string, onEvent: (ev: AgentStreamEvent) => void, collect: (t: string) => void): void {
+  private parseLine(line: string, onEvent: (ev: AgentStreamEvent) => void, collect: (t: string) => void, collectResult?: (t: string) => void): void {
     const obj = safeJson(line);
     if (!obj) return;
     const type = String(obj.type ?? '');
@@ -268,7 +274,9 @@ export class ClaudeSessionAdapter implements AgentAdapter {
       if (obj.subtype === 'error' || obj.is_error === true) {
         onEvent({ type: 'error', message: String(obj.result ?? obj.error ?? 'Claude result error') });
       } else {
-        onEvent({ type: 'turn_completed', summary: String(obj.result ?? '').slice(0, 2000) });
+        const res = typeof obj.result === 'string' ? obj.result : '';
+        if (res && collectResult) collectResult(res);
+        onEvent({ type: 'turn_completed', summary: res.slice(0, 2000) });
       }
     }
   }

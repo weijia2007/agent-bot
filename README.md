@@ -1,4 +1,4 @@
-# NexusBot Studio
+# Agent Bot
 
 本地多 Agent 协同桌面工作台：在一个 Windows 桌面应用里同时驱动 **Claude Code / Codex / Antigravity**，
 以「主管 Bot + 团队 Bot」的形式完成拆任务、派单、互相 `@`、交叉审查与汇总。

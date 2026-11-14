@@ -167,8 +167,10 @@ export class CodexSessionAdapter implements AgentAdapter {
     try {
       await rpc.request('initialize', { clientInfo: { name: 'nexus-bot-studio', version: '0.1.0' }, capabilities: {} }, 5000);
       rpc.notify('initialized');
-      const started = await rpc.request('thread/start',
-        { cwd: bot.workspace && fs.existsSync(bot.workspace) ? bot.workspace : os.homedir() }, 6000) as Record<string, unknown> | null;
+      const started = await rpc.request('thread/start', {
+        cwd: bot.workspace && fs.existsSync(bot.workspace) ? bot.workspace : os.homedir(),
+        ...(bot.model ? { model: bot.model } : {}),
+      }, 6000) as Record<string, unknown> | null;
       const thread = (started?.thread ?? {}) as Record<string, unknown>;
       const threadId = String(thread.id ?? started?.threadId ?? started?.id ?? '');
       if (!threadId) { rpc.kill(); return null; }
@@ -176,10 +178,20 @@ export class CodexSessionAdapter implements AgentAdapter {
 
       return await new Promise<TurnResult>((resolve) => {
         let done = false;
-        const finish = (r: TurnResult): void => { if (!done) { done = true; clearTimeout(timer); rpc.kill(); resolve(r); } };
+        let streamedText = '';
+        const finish = (r: TurnResult): void => {
+          if (!done) { done = true; clearTimeout(timer); rpc.kill(); resolve(r.ok && !r.text && streamedText ? { ...r, text: streamedText } : r); }
+        };
         const timer = setTimeout(() => finish({ ok: false, uncertain: true, error: 'app-server turn timed out' }), 20 * 60 * 1000);
-        rpc.onNotification = (method, params) => this.mapNotification(method, params, onEvent, finish);
-        rpc.request('turn/start', { threadId, input: [{ type: 'text', text: prompt }] }, 10_000)
+        rpc.onNotification = (method, params) => this.mapNotification(method, params, (ev) => {
+          if (ev.type === 'text_delta') streamedText += ev.text;
+          onEvent(ev);
+        }, finish);
+        rpc.request('turn/start', {
+          threadId,
+          input: [{ type: 'text', text: prompt }],
+          ...(bot.model ? { model: bot.model } : {}),
+        }, 10_000)
           .catch((e) => finish({ ok: false, error: (e as Error).message }));
       });
     } catch {
@@ -210,6 +222,21 @@ export class CodexSessionAdapter implements AgentAdapter {
     }
   }
 
+  private buildExecArgs(
+    entry: { nodeExe: string; codexJs: string }, cwd: string, bot: BotConfig, prompt: string, threadId?: string,
+  ): string[] {
+    const base = threadId
+      ? ['exec', 'resume', threadId, '--skip-git-repo-check']
+      : ['exec', '--skip-git-repo-check', '-C', cwd];
+    if (bot.model) base.push('-m', bot.model);
+    return [
+      entry.codexJs, ...base, '--json',
+      '-c', `mcp_servers.nexus_bot_studio.url="${mcpUrl(bot.bot_id)}"`,
+      '-c', 'mcp_servers.nexus_bot_studio.bearer_token_env_var="NEXUS_BOT_MCP_TOKEN"',
+      prompt,
+    ];
+  }
+
   /** Degraded path: one real `codex exec --json` process per turn, resuming the same thread id
    *  on later turns so the conversation keeps its own context. */
   private execTurn(
@@ -217,23 +244,16 @@ export class CodexSessionAdapter implements AgentAdapter {
     prompt: string, onEvent: (ev: AgentStreamEvent) => void,
   ): Promise<TurnResult> {
     const cwd = bot.workspace && fs.existsSync(bot.workspace) ? bot.workspace : os.homedir();
-    const base = ['exec'];
-    if (session.threadId) base.push('resume', session.threadId);
-    const args = [
-      entry.codexJs, ...base, '--json', '-C', cwd,
-      '-c', `mcp_servers.nexus_bot_studio.url="${mcpUrl(bot.bot_id)}"`,
-      '-c', 'mcp_servers.nexus_bot_studio.bearer_token_env_var="NEXUS_BOT_MCP_TOKEN"',
-      prompt,
-    ];
-    return this.runExec(entry.nodeExe, args, cwd, session, bot, onEvent, true);
+    const args = this.buildExecArgs(entry, cwd, bot, prompt, session.threadId);
+    return this.runExec(entry, args, cwd, session, bot, prompt, onEvent, true);
   }
 
   private runExec(
-    nodeExe: string, args: string[], cwd: string, session: CodexSession, bot: BotConfig,
-    onEvent: (ev: AgentStreamEvent) => void, allowRetry: boolean,
+    entry: { nodeExe: string; codexJs: string }, args: string[], cwd: string, session: CodexSession, bot: BotConfig,
+    prompt: string, onEvent: (ev: AgentStreamEvent) => void, allowRetry: boolean,
   ): Promise<TurnResult> {
     return new Promise<TurnResult>((resolve) => {
-      const proc = this.spawnFn(nodeExe, args, {
+      const proc = this.spawnFn(entry.nodeExe, args, {
         windowsHide: true, cwd, stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, NEXUS_BOT_MCP_TOKEN: this.token },
       });
@@ -266,12 +286,10 @@ export class CodexSessionAdapter implements AgentAdapter {
       proc.on('close', (code) => {
         if (allowRetry && code !== 0 && session.threadId && !text
           && /resume|unknown|not found|no recorded|missing|does not exist/i.test(stderr)) {
-          // Capture the stale id BEFORE clearing it: otherwise the filter leaves the old thread id
-          // as a stray positional argument and the retry fails again.
-          const staleThreadId = session.threadId;
+          // Clear stale thread id and rebuild a fresh `codex exec` invocation without `resume`.
           session.threadId = undefined;
-          const retry = args.filter((a) => a !== 'resume' && a !== staleThreadId);
-          this.runExec(nodeExe, retry, cwd, session, bot, onEvent, false).then(finish);
+          const retry = this.buildExecArgs(entry, cwd, bot, prompt);
+          this.runExec(entry, retry, cwd, session, bot, prompt, onEvent, false).then(finish);
           return;
         }
         if (code === 0) { onEvent({ type: 'turn_completed', summary: text.slice(-2000) }); finish({ ok: true, sessionId: session.threadId ?? session.id, text }); }
@@ -287,7 +305,13 @@ export class CodexSessionAdapter implements AgentAdapter {
     else if (type === 'item.started' || type === 'item.completed') {
       const item = (obj.item ?? {}) as Record<string, unknown>;
       const kind = String(item.type ?? 'tool');
-      if (type === 'item.started') onEvent({ type: 'tool_call_start', tool: kind, args: JSON.stringify(item).slice(0, 600) });
+      if (kind === 'agent_message' || kind === 'assistant_message') {
+        const value = typeof item.text === 'string' ? item.text : '';
+        if (type === 'item.completed' && value) { onEvent({ type: 'text_delta', text: value }); collect(value); }
+      } else if (kind === 'reasoning') {
+        const value = typeof item.text === 'string' ? item.text : '';
+        if (type === 'item.completed' && value) onEvent({ type: 'thinking_delta', text: value });
+      } else if (type === 'item.started') onEvent({ type: 'tool_call_start', tool: kind, args: JSON.stringify(item).slice(0, 600) });
       else onEvent({ type: 'tool_call_result', tool: kind, output: String(item.text ?? item.output ?? '').slice(0, 1200), ok: true });
     } else if (type === 'agent_message' || type === 'item/agentMessage/delta') {
       const value = String(obj.message ?? obj.delta ?? '');

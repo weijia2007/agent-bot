@@ -15,6 +15,7 @@ declare global {
       createBot(input: unknown): Promise<BotConfig>;
       deleteBot(botId: string): Promise<boolean>;
       reconnectBot(botId: string): Promise<BotConfig | null>;
+      setBotModel(botId: string, model: string): Promise<BotConfig | null>;
       setSupervisor(botId: string): Promise<boolean>;
       sendMessage(room: string, text: string, target?: string | null): Promise<RoomMessage>;
       sendDirect(botId: string, text: string, room: string): Promise<RoomMessage>;
@@ -62,6 +63,7 @@ interface StudioStore {
   wsConnected: boolean;
   setActiveRoom(id: string): void;
   setActiveBot(id: string | null): void;
+  setBotModel(botId: string, model: string): Promise<void>;
   setInspectorOpen(open: boolean): void;
   setInspectorTab(tab: InspectorTab): void;
   setSidebarWidth(width: number): void;
@@ -81,10 +83,10 @@ export const useStudio = create<StudioStore>((set, get) => ({
   state: null,
   activeRoom: 'default',
   activeBot: null,
-  inspectorOpen: true,
+  inspectorOpen: false,
   inspectorTab: 'tasks',
-  sidebarWidth: 292,
-  inspectorWidth: 340,
+  sidebarWidth: 248,
+  inspectorWidth: 320,
   newBotOpen: false,
   newRoomOpen: false,
   streams: {},
@@ -96,6 +98,18 @@ export const useStudio = create<StudioStore>((set, get) => ({
 
   setActiveRoom: (id) => set({ activeRoom: id, activeBot: null }),
   setActiveBot: (id) => set({ activeBot: id }),
+  setBotModel: async (botId, model) => {
+    const updated = await window.studio.setBotModel(botId, model);
+    if (updated) {
+      set((s) => s.state ? ({
+        state: {
+          ...s.state,
+          bots: s.state.bots.map((b) => (b.bot_id === botId ? updated : b)),
+        },
+      }) : s);
+      get().toast(`已切换模型为 ${updated.model || '默认模型'}`, 'success');
+    }
+  },
   setInspectorOpen: (open) => set({ inspectorOpen: open }),
   setInspectorTab: (tab) => set({ inspectorTab: tab, inspectorOpen: true }),
   setSidebarWidth: (width) => set({ sidebarWidth: Math.max(230, Math.min(460, width)) }),
