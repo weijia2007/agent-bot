@@ -24,7 +24,7 @@ jobs:
           global-json-file: engine/global.json
       - name: Build isolated engine
         working-directory: engine
-        run: dotnet publish native/NexusRelay.csproj -c Release -r win-x64 --self-contained true -p:PublishAot=false -o publish --nologo
+        run: dotnet publish native/NexusRelay.csproj -c Release -r win-x64 --self-contained true -p:RuntimeIdentifiers=win-x64 -p:PublishAot=false -o publish --nologo
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm ci

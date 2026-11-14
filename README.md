@@ -51,7 +51,7 @@ Claude 的本地收件箱没有远程中断能力：平台停止后续派单并�
 
 ```powershell
 cd engine
-dotnet publish native/NexusRelay.csproj -c Release -r win-x64 --self-contained true -p:PublishAot=false -o publish
+dotnet publish native/NexusRelay.csproj -c Release -r win-x64 --self-contained true -p:RuntimeIdentifiers=win-x64 -p:PublishAot=false -o publish
 cd ../desktop
 npm ci
 npm run typecheck
