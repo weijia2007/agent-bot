@@ -1,0 +1,28 @@
+appId: com.nexusbot.studio
+productName: NexusBot Studio
+copyright: Copyright 2026 NexusBot Studio
+directories:
+  output: release
+  buildResources: build
+electronDist: node_modules/electron/dist
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - node_modules/**/*
+  - package.json
+extraResources:
+  - from: ../engine/publish
+    to: engine
+    filter:
+      - '**/*'
+  - from: build/icon.ico
+    to: icon.ico
+win:
+  icon: build/icon.ico
+  signAndEditExecutable: false
+  target:
+    - target: dir
+      arch:
+        - x64
+  artifactName: NexusBotStudio-${version}-${arch}.${ext}
+asar: true

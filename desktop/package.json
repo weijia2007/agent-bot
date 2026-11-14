@@ -1,0 +1,40 @@
+{
+  "name": "nexusbot-studio",
+  "productName": "NexusBot Studio",
+  "version": "0.1.0",
+  "description": "Local multi-agent collaboration desktop workbench for Claude Code, Codex and Antigravity",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "build": "vite build && node scripts/build-electron.mjs",
+    "start": "node scripts/start.mjs",
+    "dist": "npm run build && electron-builder --win --dir",
+    "shortcut": "node scripts/create-desktop-shortcut.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "lucide-react": "^0.460.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  }
+}

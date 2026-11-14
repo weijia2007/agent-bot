@@ -1,0 +1,15 @@
+# Toolchain downloads and build artefacts: large, machine-local, never versioned.
+.toolchain/
+**/.build/
+**/bin/
+**/obj/
+**/node_modules/
+engine/publish/
+engine/TestResults/
+desktop/dist/
+desktop/dist-electron/
+desktop/release/
+docs/.smoke-home/
+*.log
+*.zip
+.DS_Store

@@ -1,0 +1,264 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json.Nodes;
+
+namespace NexusRelay;
+
+// Child: a subagent thread (spawn edge or subagent source), which runs inside its parent's turn.
+// Headless: a `codex exec` run outside the app, whose journal Codex may delete while the thread row stays.
+public sealed record AppChat(string Id, string Path, string Cwd, bool Archived, bool Child, bool Headless = false);
+public sealed record AppTurn(bool Finished, double? At, string? Error = null, double? Last = null);
+
+public static partial class AppSessions
+{
+    public static string CodexHome => Environment.GetEnvironmentVariable("CODEX_HOME") ?? System.IO.Path.Join(RelayPaths.UserHome(), ".codex");
+    public static string RelayDirectory => CodexSpace.Configured()["path"]!.ToString();
+    public static List<AppChat> CodexChats()
+    {
+        string db = System.IO.Path.Join(CodexHome, "state_5.sqlite");
+        if (!File.Exists(db)) return [];
+        // Windows ships SQLite. Always read-only, including WAL-backed app databases.
+        nint handle = 0, statement = 0;
+        try
+        {
+            if (SqliteOpen(db, out handle, 1, 0) != 0) throw new RelayError("Codex app database cannot be opened read-only");
+            _ = SqliteBusy(handle, 2000);
+            const string sql = "SELECT t.id,t.rollout_path,t.cwd,t.archived,EXISTS(SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id=t.id) OR CASE WHEN json_valid(t.source) THEN json_type(t.source,'$.subagent') IS NOT NULL ELSE 0 END,t.source='exec' FROM threads t";
+            if (SqlitePrepare(handle, sql, -1, out statement, 0) != 0) throw new RelayError("Codex app database schema is unreadable");
+            var result = new List<AppChat>();
+            int code;
+            while ((code = SqliteStep(statement)) == 100)
+                result.Add(new(Text(statement, 0), Text(statement, 1), Text(statement, 2), SqliteInt(statement, 3) != 0, SqliteInt(statement, 4) != 0, SqliteInt(statement, 5) != 0));
+            if (code != 101) throw new RelayError("Codex app database read did not finish");
+            return result;
+        }
+        finally
+        {
+            if (statement != 0) _ = SqliteFinalize(statement);
+            if (handle != 0) _ = SqliteClose(handle);
+        }
+    }
+    private static string Text(nint statement, int i) => Marshal.PtrToStringUTF8(SqliteText(statement, i)) ?? "";
+    public static bool IsRelay(AppChat chat) => !chat.Child && SameDirectory(chat.Cwd, RelayDirectory);
+    private static bool SameDirectory(string left, string right)
+    {
+        try { return RelayBox.PlainPath(left).Equals(RelayBox.PlainPath(right), StringComparison.Ordinal); }
+        catch (ArgumentException) { return false; }
+    }
+    public static string Tail(string path, int bytes = 262144)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        stream.Seek(Math.Max(0, stream.Length - bytes), SeekOrigin.Begin);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
+    public static IEnumerable<JsonObject> Lines(string text)
+    {
+        foreach (string line in text.Split('\n'))
+        {
+            JsonObject? obj = null;
+            try { obj = JsonNode.Parse(line) as JsonObject; } catch (System.Text.Json.JsonException) { /* Partial or non-JSON line: skipped. */ }
+            if (obj is not null) yield return obj;
+        }
+    }
+    public static double? Epoch(string? iso) => DateTimeOffset.TryParse(iso, out var dt) ? dt.ToUnixTimeMilliseconds() / 1000.0 : null;
+    public const int CodexTailCap = 16 * 1024 * 1024;
+    /// <summary>The last complete line of a JSONL file, however long, or null when the file does not end with a newline (still being written).</summary>
+    public static string? LastLine(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        long end = stream.Length;
+        if (end == 0) return null;
+        stream.Seek(end - 1, SeekOrigin.Begin);
+        if (stream.ReadByte() != '\n') return null;
+        long start = 0, position = end - 1; var buffer = new byte[65536];
+        while (position > 0 && start == 0)
+        {
+            int count = (int)Math.Min(buffer.Length, position); position -= count;
+            stream.Seek(position, SeekOrigin.Begin); stream.ReadExactly(buffer, 0, count);
+            int newline = buffer.AsSpan(0, count).LastIndexOf((byte)'\n');
+            if (newline >= 0) start = position + newline + 1;
+        }
+        var line = new byte[end - 1 - start];
+        stream.Seek(start, SeekOrigin.Begin); stream.ReadExactly(line);
+        return Encoding.UTF8.GetString(line);
+    }
+    public static AppTurn CodexTurn(string path, double? since = null)
+    {
+        try
+        {
+            // Grow the tail if a long running turn has no start marker in the first window.
+            // At the cap the window is still judged: a last turn bigger than the cap (inlined view_image base64, 06/11) stayed
+            // "working" forever and deferred every wake of its topic. Without a start marker in the window, the window lies
+            // inside one turn; when all of it is newer than `since`, that turn is the one started after `since`.
+            int span = 262144; bool capped = false;
+            List<JsonObject> lines;
+            while (true)
+            {
+                lines = Lines(Tail(path, span)).ToList();
+                if (new FileInfo(path).Length <= span || lines.Any(e => e["payload"]?["type"]?.ToString() == "task_started" && (since is null || Epoch(e["timestamp"]?.ToString()) < since))) break;
+                if (span >= CodexTailCap) { capped = true; break; }
+                span *= 4;
+            }
+            bool started = capped && since is not null && lines.Select(e => Epoch(e["timestamp"]?.ToString())).FirstOrDefault(at => at is not null) >= since;
+            double? last = null; var result = new AppTurn(false, null);
+            foreach (var entry in lines)
+            {
+                string? kind = entry["payload"]?["type"]?.ToString();
+                double? at = Epoch(entry["timestamp"]?.ToString());
+                if (since is null || at >= since) last = at ?? last;
+                if (kind == "task_started" && (since is null || at >= since)) { started = true; result = new(false, at); }
+                if (kind is "task_complete" or "turn_aborted" && (started || since is null))
+                {
+                    var error = entry["payload"]?["error"];
+                    result = new(true, at, error is JsonObject ? error["message"]?.ToString() : error?.ToString() ?? entry["payload"]?["reason"]?.ToString());
+                }
+            }
+            return result with { Last = last };
+        }
+        catch (IOException) { return new(false, null); }
+    }
+    /// <summary>
+    /// Proof of a Codex wake from Codex's own journal: the user turn carrying read(id="…") is written as soon as Enter takes
+    /// effect, in whatever chat received it. True: received; false: no journal written since <paramref name="since"/> holds it;
+    /// null: a journal could not be read. A tool output quoting the id (status, read) is not a user turn and does not count.
+    /// </summary>
+    public static bool? CodexReceived(string messageId, double since)
+    {
+        string needle = "read(id=\\\"" + messageId + "\\\")";
+        var after = DateTimeOffset.FromUnixTimeMilliseconds((long)((since - 5) * 1000)).UtcDateTime;
+        try
+        {
+            foreach (string file in Lists.CodexSessionFolders.Select(f => System.IO.Path.Join(CodexHome, f)).Where(Directory.Exists)
+                .SelectMany(f => Directory.EnumerateFiles(f, "rollout-*.jsonl", SearchOption.AllDirectories)).Where(f => File.GetLastWriteTimeUtc(f) >= after))
+            {
+                using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                while (reader.ReadLine() is string line)
+                    if (line.Contains(needle, StringComparison.Ordinal) && line.Contains("\"type\":\"response_item\"", StringComparison.Ordinal) && line.Contains("\"role\":\"user\"", StringComparison.Ordinal))
+                        return true;
+            }
+            return false;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+    public static AppTurn AntigravityTurn(string conversation)
+    {
+        if (!RelayPaths.IsConversationId(conversation)) return new(false, null);
+        if (AntigravityError(conversation) is AppTurn error) return error;
+        try
+        {
+            // Only the last step matters: read it whole, whatever its size (an 8 MB tail cut a bigger step and stalled the turn).
+            if (LastLine(RelayPaths.TranscriptPath(conversation)) is not string line || Lines(line).FirstOrDefault() is not JsonObject step) return new(false, null);
+            string? kind = step["type"]?.ToString();
+            bool answered = kind == "PLANNER_RESPONSE" && step["status"]?.ToString() == "DONE" && (step["tool_calls"] is not JsonArray tools || tools.Count == 0);
+            return new(answered || kind == "ERROR_MESSAGE", Epoch(step["created_at"]?.ToString()), kind == "ERROR_MESSAGE" ? step["error"]?.ToString() ?? step["text"]?.ToString() : null);
+        }
+        catch (IOException) { return new(false, null); }
+    }
+    public static JsonObject? AntigravityToolErrors(string conversation, double since)
+    {
+        if (!RelayPaths.IsConversationId(conversation)) return null;
+        try
+        {
+            string tail = Tail(RelayPaths.TranscriptPath(conversation), 2 * 1024 * 1024);
+            bool writing = !tail.EndsWith('\n'); var steps = Lines(tail).Reverse().ToList(); int count = 0; JsonObject? last = null;
+            bool ended = !writing && steps.FirstOrDefault() is JsonObject final && final["type"]?.ToString() == "PLANNER_RESPONSE" && final["status"]?.ToString() == "DONE" && (final["tool_calls"] is not JsonArray calls || calls.Count == 0);
+            foreach (var step in steps.Where(s => s["type"]?.ToString() == "GENERIC"))
+            {
+                if (step["status"]?.ToString() != "ERROR") break;
+                if (Epoch(step["created_at"]?.ToString()) is not double at || at < since) continue;
+                count++; last ??= step;
+            }
+            if (last is null) return null;
+            string reason = (last["error"]?.ToString() ?? "Tool execution error").Trim().TrimEnd(':').Trim(); if (reason.Length > 300) reason = reason[..300];
+            string? hint = reason.Contains("denied by pre-tool hook", StringComparison.Ordinal) ? "An Antigravity PreToolUse hook refuses its tools" : reason.Contains("is not enabled for server", StringComparison.Ordinal) ? "MCP tool disabled in Antigravity" : null;
+            return new() { ["count"] = count, ["reason"] = reason, ["hint"] = hint, ["at"] = Epoch(last["created_at"]?.ToString()), ["ended"] = ended };
+        }
+        catch (IOException) { return null; }
+    }
+    public static AppTurn? AntigravityError(string conversation)
+    {
+        if (!RelayPaths.IsConversationId(conversation)) return null;
+        string path = Path.Join(RelayPaths.GeminiHome(), "antigravity", "conversations", conversation + ".db");
+        nint db = 0, statement = 0;
+        try
+        {
+            if (!File.Exists(path) || SqliteOpen(path, out db, 1, 0) != 0 || SqlitePrepare(db, "SELECT step_type, step_payload FROM steps ORDER BY idx DESC LIMIT 1", -1, out statement, 0) != 0 || SqliteStep(statement) != 100 || SqliteInt(statement, 0) != 17) return null;
+            int length = SqliteBytes(statement, 1); if (length is <= 0 or > 2 * 1024 * 1024) return null;
+            var payload = new byte[length]; Marshal.Copy(SqliteBlob(statement, 1), payload, 0, length);
+            byte[] marker = System.Text.Encoding.UTF8.GetBytes("Agent execution terminated due to error"); int begin = payload.AsSpan().IndexOf(marker);
+            if (begin < 0) return null;
+            string reason = "execution error"; int at = begin + marker.Length;
+            if (at + 2 < length && payload[at] == (byte)'.' && payload[at + 1] == 0x12)
+            {
+                int cursor = at + 2, count = 0, shift = 0;
+                while (cursor < length && shift < 28) { byte b = payload[cursor++]; count |= (b & 127) << shift; if (b < 128) break; shift += 7; }
+                if (count > 0 && cursor + Math.Min(count, 300) <= length) reason = System.Text.Encoding.UTF8.GetString(payload, cursor, Math.Min(count, 300)).Trim();
+            }
+            double? epoch = null;
+            for (int i = 0; i + 3 < length; i++) if (payload[i] == 0x0a && payload[i + 1] == 0x0c && payload[i + 2] == 0x08)
+            { long value = 0; int shift = 0; for (int j = i + 3; j < length && shift <= 56; j++, shift += 7) { byte b = payload[j]; value |= (long)(b & 127) << shift; if (b < 128) { epoch = value; break; } } if (epoch is not null) break; }
+            return new(true, epoch, reason);
+        }
+        finally
+        {
+            if (statement != 0) _ = SqliteFinalize(statement);
+            if (db != 0) _ = SqliteClose(db);
+        }
+    }
+    public static JsonObject? CodexUsage()
+    {
+        // Behind a local router (Codex LB), the journal's rate limits are those of the one upstream account that served
+        // the last turn: 97 % used there while the pool still had 50 % left deferred every wake (02/11). The router's own
+        // pooled usage is the truth; the journal stays the fallback when the router does not answer.
+        if (CodexRouter.Usage() is JsonObject pooled) return pooled;
+        try
+        {
+            var files = Lists.CodexSessionFolders.Select(f => System.IO.Path.Join(CodexHome, f)).Where(Directory.Exists).SelectMany(f => Directory.EnumerateFiles(f, "rollout-*.jsonl", SearchOption.AllDirectories));
+            var readings = files.OrderByDescending(File.GetLastWriteTimeUtc).Take(8).SelectMany(f => Lines(Tail(f)).Where(e => e["payload"]?["rate_limits"] is JsonObject)).OrderByDescending(e => e["timestamp"]?.ToString()).FirstOrDefault();
+            if (readings is null) return null;
+            var windows = new JsonObject();
+            var limits = readings["payload"]?["rate_limits"];
+            foreach (string name in Lists.RateLimitWindows.Where(n => limits?[n] is JsonObject))
+            {
+                var w = limits![name]!;
+                double reset = w["resets_at"]?.GetValue<double>() ?? 0;
+                windows[name] = new JsonObject { ["used_pct"] = reset > Reservations.Now() ? w["used_percent"]?.DeepClone() : 0, ["resets_at"] = reset, ["current"] = reset > Reservations.Now(), ["minutes"] = w["window_minutes"]?.DeepClone() };
+            }
+            return new() { ["source"] = "journal Codex (lecture passive)", ["observed"] = readings["timestamp"]?.DeepClone(), ["windows"] = windows };
+        }
+        catch (IOException) { return null; }
+    }
+    public static string? CodexQuota(double usedPct = 95)
+    {
+        var usage = CodexUsage();
+        foreach (var kv in usage?["windows"] as JsonObject ?? new())
+            if (AppTransport.Truth(kv.Value?["current"]) && kv.Value?["used_pct"] is JsonValue value && value.TryGetValue<double>(out double used) && used >= usedPct) return $"Codex quota {used:0}% used ({kv.Key})";
+        return null;
+    }
+    public static string? AntigravityQuota(RelayBox box, double remainingPct = 5)
+    {
+        var usage = AntigravityUsage(box);
+        double? at = Epoch(usage?["read_at"]?.ToString());
+        if (usage?["status"]?.ToString() != "success" || at is null || Reservations.Now() - at > 6 * 3600) return null;
+        if (usage["selection_proven"]?.GetValue<bool>() == false) return null;
+        string? selected = usage["selected_family"]?.ToString();
+        foreach (var cap in (usage["limits"] as JsonArray ?? []).OfType<JsonObject>())
+            if ((selected is null ? (cap["family"]?.ToString() ?? "").Contains("Gemini", StringComparison.OrdinalIgnoreCase) : cap["family"]?.ToString() == selected) && cap["remaining_pct"] is JsonValue value && value.TryGetValue<double>(out double pct) && pct <= remainingPct)
+                return $"Antigravity : {pct:0} % restants ({cap["family"]})";
+        return null;
+    }
+    public static JsonObject? AntigravityUsage(RelayBox box) => SharedQuota.Antigravity() ?? box.State("antigravity-usage");
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_open_v2", StringMarshalling = StringMarshalling.Utf8), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial int SqliteOpen(string path, out nint db, int flags, nint vfs);
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_prepare_v2", StringMarshalling = StringMarshalling.Utf8), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial int SqlitePrepare(nint db, string sql, int size, out nint statement, nint tail);
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_step"), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial int SqliteStep(nint statement);
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_column_text"), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial nint SqliteText(nint statement, int index);
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_column_int"), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial int SqliteInt(nint statement, int index);
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_column_blob"), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial nint SqliteBlob(nint statement, int index);
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_column_bytes"), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial int SqliteBytes(nint statement, int index);
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_finalize"), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial int SqliteFinalize(nint statement);
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_close"), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial int SqliteClose(nint db);
+    [LibraryImport("winsqlite3.dll", EntryPoint = "sqlite3_busy_timeout"), UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])] private static partial int SqliteBusy(nint db, int timeout);
+}

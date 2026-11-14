@@ -1,0 +1,151 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+# A newer push makes the running check pointless: cancel it (Windows minutes count double on private repositories).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      # Actions pinned by commit SHA (a moved tag cannot change what runs); updated by hand with Dependabot's Tuesday pass.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: test.ps1 (dotnet test, full offline check)
+        shell: pwsh
+        run: ./test.ps1
+
+  secrets:
+    # gitleaks over the whole history (official action, pinned by commit SHA).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e  # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+  workflows:
+    # zizmor: static analysis of these GitHub Actions workflows; a finding fails the job (no upload, read-only).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b  # v0.8.0
+        with:
+          advanced-security: false
+
+  install-windows:
+    # The one-line install on a clean Windows runner, as the Nexus pack runs it (Windows PowerShell 5.1, NEXUS_PACK=1),
+    # from this checkout (built by the .NET 10 SDK): daemon up behind its token, Claude Code and Codex declared, token never
+    # in their files.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: get.ps1 (NEXUS_PACK=1, Windows PowerShell 5.1)
+        shell: powershell
+        env:
+          NEXUS_PACK: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:NEXUS_RELAY_SOURCE = $env:GITHUB_WORKSPACE
+          New-Item -ItemType Directory -Force "$HOME\.codex", "$HOME\.claude", "$HOME\.nexus" | Out-Null
+          # Another Nexus daemon installed first (shared token rule): the relay must reuse its token, never make its own.
+          [IO.File]::WriteAllText("$HOME\.nexus\mcp-token.txt", ("ab" * 32))
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\get.ps1
+          if ($LASTEXITCODE) { $out; throw "get.ps1 failed ($LASTEXITCODE)" }
+          $out
+          $last = @($out)[-1]
+          if ($last -notmatch '^NEXUS_PACK_RESULT Claude Code=declared; Codex=declared') { throw "pack line: $last" }
+          if ([Environment]::GetEnvironmentVariable('NEXUS_MCP_TOKEN', 'User') -ne ("ab" * 32)) { throw 'NEXUS_MCP_TOKEN is not the shared token' }
+          if (Test-Path "$HOME\.nexus\nexus-relay\token.txt") { throw 'relay-only token created' }
+      - name: daemon answers behind its token; clients declared without the token
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $token = [Environment]::GetEnvironmentVariable('NEXUS_MCP_TOKEN', 'User')
+          if ($token.Length -lt 32) { throw 'NEXUS_MCP_TOKEN not set' }
+          $code = 0
+          foreach ($i in 1..60) {
+            try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:16181/mcp | Out-Null; $code = 200 }
+            catch { if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode } }
+            if ($code) { break }
+            Start-Sleep 2
+          }
+          if ($code -ne 401) { Get-Content "$HOME\.nexus\nexus-relay\daemon.log" -ErrorAction SilentlyContinue; throw "daemon: $code" }
+          foreach ($file in "$HOME\.claude.json", "$HOME\.codex\config.toml") {
+            $text = [IO.File]::ReadAllText($file)
+            if ($text -notmatch 'nexus-relay') { throw "${file}: no nexus-relay entry" }
+            if ($text.Contains($token)) { throw "${file}: token written in clear" }
+          }
+          if ((Get-ScheduledTask -TaskName 'NexusRelay').State -ne 'Running') { throw 'scheduled task not running' }
+          if (Get-ScheduledTask -TaskName 'Nexus Relay' -ErrorAction SilentlyContinue) { throw 'legacy scheduled task left' }
+          $host_ = (Get-Content "$HOME\.nexus\nexus-relay\settings.json" -Raw | ConvertFrom-Json).host
+          if ($host_ -ne 'all') { throw "host: $host_ (Claude Code and Codex present: all expected)" }
+      - name: update API (GET /api/update) and status file
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $token = [Environment]::GetEnvironmentVariable('NEXUS_MCP_TOKEN', 'User')
+          $state = Invoke-RestMethod -UseBasicParsing http://127.0.0.1:16181/api/update -Headers @{ Authorization = "Bearer $token" }
+          if ($state.product -ne 'relay' -or -not $state.version -or $state.runtime -ne 'native') { throw "GET /api/update: $($state | ConvertTo-Json)" }
+          if (-not (Test-Path "$HOME\.nexus\status\relay.json")) { throw 'status file missing' }
+          $hooks = Get-Content "$HOME\.codex\hooks.json" -Raw
+          if ($hooks -notmatch 'NexusRelay\.exe --edit-guard codex') { throw "Codex edit guard: $hooks" }
+          if (-not (Test-Path "$HOME\.nexus\nexus-relay\bin\NexusRelay.exe")) { throw 'stable engine path missing' }
+
+  install-windows-scoped:
+    # The Nexus pack passes the AI apps the user chose (NEXUS_PACK_TARGETS): the others must stay untouched.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: get.ps1 with NEXUS_PACK_TARGETS=codex (Claude Code and Antigravity present but not chosen)
+        shell: powershell
+        env:
+          NEXUS_PACK: "1"
+          NEXUS_PACK_TARGETS: codex
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:NEXUS_RELAY_SOURCE = $env:GITHUB_WORKSPACE
+          New-Item -ItemType Directory -Force "$HOME\.codex", "$HOME\.claude", "$HOME\.gemini\config" | Out-Null
+          Set-Content "$HOME\.claude.json" '{"theme": "dark"}' -Encoding ascii
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\get.ps1
+          if ($LASTEXITCODE) { $out; throw "get.ps1 failed ($LASTEXITCODE)" }
+          $out
+          $last = @($out)[-1]
+          if ($last -ne 'NEXUS_PACK_RESULT Codex=declared') { throw "pack line: $last" }
+          if ((Get-Content "$HOME\.claude.json" -Raw).Trim() -ne '{"theme": "dark"}') { throw 'Claude Code touched' }
+          if (Test-Path "$HOME\.gemini\config\plugins\nexus-relay") { throw 'Antigravity plugin installed' }
+          if (Test-Path "$HOME\.gemini\config\config.json") { throw 'Antigravity config touched' }
+          if ((Get-Content "$HOME\.codex\config.toml" -Raw) -notmatch 'nexus-relay') { throw 'Codex not declared' }
+          $host_ = (Get-Content "$HOME\.nexus\nexus-relay\settings.json" -Raw | ConvertFrom-Json).host
+          if ($host_ -ne 'codex') { throw "host: $host_ (only Codex chosen: codex expected)" }

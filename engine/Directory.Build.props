@@ -1,0 +1,29 @@
+<Project>
+  <!-- Build outside OneDrive (no synchronized bin/obj): ~\.nexus\build\nexusrelay\<project>.
+       The user profile comes from .NET, not $(USERPROFILE): Dependabot restores on Linux, where USERPROFILE is unset
+       and '\.nexus' at the file system root was denied, so its NuGet updates silently found nothing. -->
+  <PropertyGroup>
+    <!-- NexusBot Studio: build artefacts stay inside the new project. The original NexusRelay
+         keeps using ~/.nexus/build/nexusrelay and is never touched by this fork. -->
+    <NexusRelayBuild>$([System.IO.Path]::Combine('$(MSBuildThisFileDirectory)', '.build', '$(MSBuildProjectName)'))$([System.IO.Path]::DirectorySeparatorChar)</NexusRelayBuild>
+    <BaseIntermediateOutputPath>$(NexusRelayBuild)obj\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+    <BaseOutputPath>$(NexusRelayBuild)bin\</BaseOutputPath>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <!-- Strict build: the recommended .NET analyzers and the code style rules of .editorconfig, every warning an error. -->
+  <PropertyGroup>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <!-- NuGet restore pinned by packages.lock.json (direct and transitive packages, content hashes); CI and release
+       restore in locked mode, so a dependency never changes without a committed lock file. -->
+  <PropertyGroup>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
+  </PropertyGroup>
+</Project>

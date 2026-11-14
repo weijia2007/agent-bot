@@ -1,0 +1,11 @@
+# Builds and test files live outside the repository (~\.nexus\build\nexusrelay, Directory.Build.props)
+bin/
+obj/
+dist/
+build/
+*.tmp
+*.log
+
+# Mailbox and logs live outside the repository (~\.nexus\relay, Antigravity's sidecar_data)
+relay.lock
+sidecar.lock

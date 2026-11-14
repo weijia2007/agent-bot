@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+html, body, #root { height: 100%; margin: 0; overflow: hidden; }
+body { background: #0b0d12; color: #dce2ee; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a3145; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #3c4661; }
+
+@layer components {
+  .panel { @apply bg-ink-900 border border-white/5; }
+  .card { @apply rounded-xl border border-white/5 bg-ink-850/80 backdrop-blur-sm; }
+  .chip { @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium; }
+  .btn { @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed; }
+  .btn-ghost { @apply btn text-slate-400 hover:bg-white/5 hover:text-slate-100; }
+  .btn-primary { @apply btn bg-indigo-500/90 text-white hover:bg-indigo-400; }
+  .btn-danger { @apply btn bg-red-500/90 text-white hover:bg-red-400; }
+  .input { @apply w-full rounded-lg border border-white/8 bg-ink-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30; }
+  .label { @apply block text-[11px] font-medium uppercase tracking-wide text-slate-500 mb-1.5; }
+  .divider { @apply border-t border-white/5; }
+  .mono { @apply font-mono text-[11px]; }
+}
+
+.glass-top {
+  background: linear-gradient(180deg, rgba(21,25,37,.96), rgba(16,19,27,.9));
+}
+
+.dot-working { background: #3ecf8e; box-shadow: 0 0 0 3px rgba(62,207,142,.15); }
+.dot-queued { background: #e9a23b; box-shadow: 0 0 0 3px rgba(233,162,59,.15); }
+.dot-error { background: #f05252; box-shadow: 0 0 0 3px rgba(240,82,82,.15); }
+.dot-paused { background: #8b93a8; }
+.dot-idle { background: #4b5568; }
+.dot-waiting_approval { background: #a78bfa; box-shadow: 0 0 0 3px rgba(167,139,250,.15); }
+
+.stream-line { border-left: 2px solid rgba(99,102,241,.25); }
+.diff-add { background: rgba(62,207,142,.09); border-left: 2px solid #3ecf8e; }
+.diff-del { background: rgba(240,82,82,.09); border-left: 2px solid #f05252; }
+
+textarea { resize: none; }
+select option { background: #151925; }
