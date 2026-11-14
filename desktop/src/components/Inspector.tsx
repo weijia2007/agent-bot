@@ -16,12 +16,12 @@ const TABS: { id: InspectorTab; label: string; icon: React.ReactNode }[] = [
 function TaskGraph(): React.ReactNode {
   const { state, activeRoom, setActiveBot } = useStudio();
   const messages = (state?.messages ?? []).filter((m) => m.room === activeRoom);
-  const roots = messages.filter((m) => m.kind === 'user' || m.kind === 'system').slice(-12);
+  const roots = messages.filter((m) => m.kind === 'user' && m.channel !== 'desktop').slice(-12);
   if (roots.length === 0) return <EmptyState icon={<ListTree size={22} />} title="暂无任务链" hint="用户下达需求后，树状进度与耗时统计会显示在这里。" />;
   return (
     <div className="space-y-4 p-3">
       {roots.map((root) => {
-        const children = messages.filter((m) => m.created >= root.created && m.id !== root.id && m.kind !== 'user').slice(0, 12);
+        const children = messages.filter((m) => m.id !== root.id && m.kind !== 'user' && (root.trace_id ? m.trace_id === root.trace_id : m.reply_to === root.id)).slice(0, 30);
         const done = children.filter((c) => c.status === 'done').length;
         return (
           <div key={root.id} className="rounded-lg border border-white/6 bg-ink-950/40 p-2.5">

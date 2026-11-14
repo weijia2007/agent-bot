@@ -4,6 +4,7 @@ import { useStudio } from '../store';
 import type { BotConfig, RoomMessage, SearchHit } from '../types';
 import { BotAvatar, EmptyState, EngineBadge, formatTime } from './Common';
 import { extractLiveTurnStream, ModelPicker } from './ModelPicker';
+import { LiveProcessCard, MessageTraceDrawer } from './ProcessTimeline';
 
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   queued: { label: '排队中', cls: 'text-amber-300 bg-amber-500/10' },
@@ -46,6 +47,7 @@ function MessageCard({ message, bots, onPickBot }: {
           </div>
           <div className="rounded-2xl rounded-tr-sm border border-indigo-500/25 bg-indigo-500/12 px-3.5 py-2.5 text-[12.5px] leading-relaxed text-slate-100 whitespace-pre-wrap break-words">
             {message.text}
+            {message.attachments?.map(file => <button key={file} type="button" className="mt-2 block text-xs text-sky-300" onClick={() => { void window.studio.openPath(file); }}><Paperclip size={11} className="inline" /> {file.split(/[\\/]/).pop()}</button>)}
           </div>
         </div>
         <div className="mt-5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-600/60 text-xs font-semibold text-slate-200">U</div>
@@ -71,6 +73,7 @@ function MessageCard({ message, bots, onPickBot }: {
           <span className="mono ml-auto text-[10px] text-slate-600">{formatTime(message.created)}</span>
         </div>
         <div className="rounded-xl border border-white/6 bg-white/[.02] px-3.5 py-2.5 text-[13.5px] leading-relaxed text-slate-200 whitespace-pre-wrap break-words select-text">
+          <MessageTraceDrawer steps={message.trace_steps} />
           {message.text}
         </div>
         {message.progress && <div className="mt-1.5 flex items-center gap-1.5 text-[10.5px] text-slate-500"><CheckCircle2 size={11} />{message.progress}</div>}
@@ -113,7 +116,7 @@ export default function RoomView(): React.ReactNode {
     () => bots.find((b) => b.bot_id === effectiveTarget) ?? bots.find((b) => b.is_supervisor) ?? bots[0],
     [bots, effectiveTarget],
   );
-  const messages = useMemo(() => state?.messages.filter((m) => m.room === activeRoom) ?? [], [state?.messages, activeRoom]);
+  const messages = useMemo(() => state?.messages.filter((m) => m.room === activeRoom && m.channel !== 'direct' && m.channel !== 'desktop') ?? [], [state?.messages, activeRoom]);
   const suggestions = useMemo(() => {
     if (!mention) return [];
     const q = mention.query.toLowerCase();
@@ -135,10 +138,9 @@ export default function RoomView(): React.ReactNode {
         body = value.slice(first[0].length).trim() || value;
       }
     }
-    const full = attachments.length ? `${body}\n\n附件：\n${attachments.join('\n')}` : body;
     setBusy(true);
     try {
-      await window.studio.sendMessage(activeRoom, full, target ?? null);
+      await window.studio.sendMessage(activeRoom, body, target ?? null, attachments);
       setText(''); setAttachments([]); setMention(null);
     } catch (e) { toast(`发送失败：${(e as Error).message}`, 'error'); }
     finally { setBusy(false); inputRef.current?.focus(); }
@@ -258,20 +260,20 @@ export default function RoomView(): React.ReactNode {
             return (
               <div
                 key={`live-${b.bot_id}`}
-                onClick={() => setActiveBot(b.bot_id)}
-                className="animate-slideIn flex cursor-pointer items-start gap-3 py-1.5 opacity-95 hover:opacity-100"
-                title="点击打开单 Bot 对话查看详情"
+                className="animate-slideIn flex items-start gap-3 py-1.5 opacity-95"
               >
                 <BotAvatar bot={b} size={28} />
                 <div className="min-w-0 flex-1">
                   <div className="mb-1 flex items-center gap-2 text-[11px] text-slate-400">
                     <span className="font-medium text-slate-200">{b.display_name}</span>
-                    <span className="text-indigo-300">{b.status === 'queued' ? '排队中…' : '正在生成…'}</span>
-                    {live.activeTool && <span className="text-[10.5px] text-slate-500">· {live.activeTool}</span>}
                   </div>
-                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/[.04] px-3.5 py-2 text-[13px] leading-relaxed text-slate-300 whitespace-pre-wrap break-words">
-                    {live.text || (live.thinking ? '正在思考推理…' : '正在等待响应…')}
-                    <span className="ml-1 inline-block h-3 w-1.5 animate-pulse rounded-sm bg-indigo-400 align-middle" />
+                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/[.04] px-3.5 py-2.5">
+                    <LiveProcessCard
+                      live={live}
+                      status={b.status}
+                      compact
+                      onOpenDetail={() => setActiveBot(b.bot_id)}
+                    />
                   </div>
                 </div>
               </div>
@@ -307,7 +309,7 @@ export default function RoomView(): React.ReactNode {
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
               e.preventDefault();
-              const files = Array.from(e.dataTransfer.files).map((f) => (f as File & { path?: string }).path).filter((p): p is string => Boolean(p));
+              const files = Array.from(e.dataTransfer.files).map((f) => window.studio.pathForFile(f)).filter(Boolean);
               if (files.length) setAttachments((list) => [...list, ...files].slice(0, 8));
             }}
           >
@@ -338,23 +340,21 @@ export default function RoomView(): React.ReactNode {
               {composerBot && (
                 <ModelPicker
                   engine={composerBot.engine_type}
+                  targetId={composerBot.desktop_target_id}
                   model={composerBot.model}
+                  effort={composerBot.reasoning_effort}
                   direction="up"
                   align="left"
                   compact
-                  onChange={(next) => { void setBotModel(composerBot.bot_id, next); }}
+                  onChange={(nextModel, nextEffort) => { void setBotModel(composerBot.bot_id, nextModel, nextEffort); }}
                 />
               )}
               <button type="button" className="btn-ghost px-2 py-1 text-[11px]" title="输入 @ 触发补全" onClick={() => { setText((t) => `${t}@`); inputRef.current?.focus(); }}>
                 <AtSign size={12} /> 提及
               </button>
-              <label className="btn-ghost cursor-pointer px-2 py-1 text-[11px]" title="附加文件 / 截图">
+              <button type="button" className="btn-ghost cursor-pointer px-2 py-1 text-[11px]" title="上传任务文件 / 截图" onClick={() => { void window.studio.pickAttachments().then(files => setAttachments(list => [...new Set([...list, ...files])].slice(0, 8))); }}>
                 <Paperclip size={12} /> 附件
-                <input type="file" multiple className="hidden" onChange={(e) => {
-                  const files = Array.from(e.target.files ?? []).map((f) => (f as File & { path?: string }).path).filter((p): p is string => Boolean(p));
-                  if (files.length) setAttachments((list) => [...list, ...files].slice(0, 8));
-                }} />
-              </label>
+              </button>
               <button type="button" className="btn-primary ml-auto px-3.5 py-1.5 rounded-xl" disabled={!text.trim() || busy} onClick={() => void send()}>
                 <Send size={12} /> 发送 <CornerDownLeft size={10} className="opacity-60" />
               </button>

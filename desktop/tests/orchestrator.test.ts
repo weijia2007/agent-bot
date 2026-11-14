@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import path from 'node:path';
 
 const { tempHome } = vi.hoisted(() => {
   const f = require('node:fs') as typeof import('node:fs');
@@ -73,7 +74,7 @@ describe('Orchestrator routing, hop guard, and lock synchronization', () => {
     expect(enqueued[0].prompt).toContain('message_id: 20261114T080000123-abcdef');
     expect(enqueued[0].prompt).toContain('from: claude-sup');
     expect(enqueued[0].prompt).toContain('trace_id: tr-123');
-    expect(enqueued[0].prompt).toContain('reply(id="20261114T080000123-abcdef", as_bot="codex-worker"');
+    expect(enqueued[0].prompt).toContain('agent-bot-dispatch');
 
     // locks_changed updates state.locks authoritatively
     internal.onEngineEvent({
@@ -132,15 +133,19 @@ describe('Orchestrator routing, hop guard, and lock synchronization', () => {
     internal.pushMessage({
       id: 'msg-dup-1', kind: 'user', from: 'user', to: 'r1-a', room: 'room-1',
       text: 'hello', created: '2026-11-14T10:00:00Z', status: 'done', trace_id: 'tr-keep',
+      attachments: ['C:\\tasks\\brief.txt'], channel: 'direct', task_id: 'msg-dup-1',
     });
     internal.pushMessage({
       id: 'msg-dup-1', kind: 'user', from: 'user', to: 'r1-a', room: 'room-1',
-      text: 'hello', created: '2026-11-14T10:00:00Z', status: 'delivered',
+      text: 'hello', created: '2026-11-14T10:00:00Z', status: 'delivered', attachments: undefined,
     });
     const stored = orch.getState().messages.filter((m) => m.id === 'msg-dup-1');
     expect(stored).toHaveLength(1);
     expect(stored[0].status).toBe('done');
     expect(stored[0].trace_id).toBe('tr-keep');
+    expect(stored[0].attachments).toEqual(['C:\\tasks\\brief.txt']);
+    expect(stored[0].channel).toBe('direct');
+    expect(stored[0].task_id).toBe('msg-dup-1');
 
     // 2. setSupervisor only affects target.room and formats valid bot_id/room (never "undefined")
     await orch.setSupervisor('r1-b');
@@ -148,9 +153,11 @@ describe('Orchestrator routing, hop guard, and lock synchronization', () => {
     expect(internal.bots.get('r1-b')?.is_supervisor).toBe(true);
     expect(internal.bots.get('r2-sup')?.is_supervisor).toBe(true);
     expect(internal.bots.get('r1-b')?.system_prompt).not.toContain('undefined');
-    expect(internal.bots.get('r1-b')?.system_prompt).toContain('room-1');
+    expect(internal.bots.get('r1-b')?.system_prompt).toBe('check lint');
 
     // 3. deleteBot removes approvals and locks belonging to deleted bot only
+    await expect(orch.deleteBot('r1-b')).rejects.toThrow('先指定其他 Bot 为主管');
+    await orch.setSupervisor('r1-a');
     await orch.deleteBot('r1-b');
     expect(orch.getState().approvals.map((a) => a.id)).toEqual(['ap-2']);
     expect(orch.getState().locks.map((l) => l.id)).toEqual(['lk-2']);
@@ -185,14 +192,24 @@ describe('Orchestrator routing, hop guard, and lock synchronization', () => {
     internal.bots.set(bot.bot_id, bot);
     internal.state.bots = [bot];
 
-    // 1. setBotModel updates and clears cleanly
-    const updated = orch.setBotModel(bot.bot_id, 'opus');
+    // 1. setBotModel updates, persists reasoning_effort, clamps per-model effort, and clears cleanly
+    internal.adapters.set(bot.bot_id, { applySettings: async () => {} } as never);
+    const updated = await orch.setBotModel(bot.bot_id, 'opus', 'xhigh');
     expect(updated?.model).toBe('opus');
-    expect(orch.setBotModel(bot.bot_id, '')?.model).toBeUndefined();
+    expect(updated?.reasoning_effort).toBe('xhigh');
+    const clampedCodexBot: BotConfig = { ...bot, bot_id: 'bot-cx-clamp', engine_type: 'codex' };
+    internal.bots.set(clampedCodexBot.bot_id, clampedCodexBot);
+    internal.adapters.set(clampedCodexBot.bot_id, { applySettings: async () => {} } as never);
+    expect((await orch.setBotModel(clampedCodexBot.bot_id, 'gpt-6-luna', 'ultra'))?.reasoning_effort).toBe('max');
+    expect((await orch.setBotModel(bot.bot_id, 'opus', ''))?.reasoning_effort).toBeUndefined();
+    expect((await orch.setBotModel(bot.bot_id, ''))?.model).toBeUndefined();
 
-    // 2. Non-MCP streamed reply automatically creates a visible RoomMessage
+    // 2. Non-MCP streamed reply automatically creates a visible RoomMessage with captured thinking/tool trace_steps
     internal.adapters.set(bot.bot_id, {
-      sendTurn: async (_b: unknown, _p: unknown, onEvent: (ev: { type: string; text?: string }) => void) => {
+      sendTurn: async (_b: unknown, _p: unknown, onEvent: (ev: { type: string; text?: string; tool?: string; args?: string; output?: string; ok?: boolean }) => void) => {
+        onEvent({ type: 'thinking_delta', text: '先检查环境' });
+        onEvent({ type: 'tool_call_start', tool: 'run_command', args: 'CommandLine=dir' });
+        onEvent({ type: 'tool_call_result', tool: 'run_command', output: 'ok', ok: true });
         onEvent({ type: 'text_delta', text: '这是自动捕获的 ' });
         onEvent({ type: 'text_delta', text: 'Bot 回复' });
         return { ok: true, sessionId: 'sess-r1', text: '这是自动捕获的 Bot 回复' };
@@ -205,6 +222,7 @@ describe('Orchestrator routing, hop guard, and lock synchronization', () => {
     const botReplies1 = orch.getState().messages.filter((m) => m.from === bot.bot_id && m.reply_to === 'u-1');
     expect(botReplies1).toHaveLength(1);
     expect(botReplies1[0].text).toBe('这是自动捕获的 Bot 回复');
+    expect(botReplies1[0].trace_steps?.map((s) => s.kind)).toEqual(['thinking', 'tool_start', 'tool_result']);
 
     // 3. When MCP reply already landed in state.messages during the turn, runTurn must NOT push a duplicate
     internal.adapters.set(bot.bot_id, {
@@ -233,5 +251,45 @@ describe('Orchestrator routing, hop guard, and lock synchronization', () => {
     const errMsgs = orch.getState().messages.filter((m) => m.reply_to === 'u-3' && m.kind === 'system');
     expect(errMsgs).toHaveLength(1);
     expect(errMsgs[0].text).toContain('API quota exceeded');
+
+    // 5. Desktop model changes retain the exact conversation and apply through the desktop adapter.
+    let reboundModel: string | undefined;
+    const agyBot: BotConfig = {
+      bot_id: 'agy-m1', display_name: 'Agy Model', engine_type: 'antigravity', role: 'worker',
+      system_prompt: 'help', permission_mode: 'auto', workspace_mode: 'shared',
+      room: 'room-r', workspace: tempHome, is_supervisor: false, status: 'idle',
+      color: '#5b8cff', created_at: new Date().toISOString(), external_session_id: 'old-conv-1',
+    };
+    internal.bots.set(agyBot.bot_id, agyBot);
+    internal.adapters.set(agyBot.bot_id, {
+      sendTurn: async () => ({ ok: true }),
+      abortTurn: async () => {},
+      applySettings: async (b: BotConfig) => { reboundModel = b.model; },
+      createSession: async (b: BotConfig) => {
+        reboundModel = b.model;
+        return { externalSessionId: 'new-conv-pro-2', metadata: {} };
+      },
+    } as unknown as { sendTurn: (...args: unknown[]) => Promise<{ ok: boolean }> });
+    const agyUpdated = await orch.setBotModel(agyBot.bot_id, 'MODEL_DESKTOP_TEST');
+    expect(agyUpdated?.model).toBe('MODEL_DESKTOP_TEST');
+    expect(reboundModel).toBe('MODEL_DESKTOP_TEST');
+    expect(agyBot.external_session_id).toBe('old-conv-1');
+
+    // Persisted working/queued status resets cleanly on loadState()
+    const stateFile = path.join(tempHome, 'state.json');
+    fs.writeFileSync(stateFile, JSON.stringify({
+      rooms: [{ id: 'room-r', name: 'Room R', project_path: tempHome, created_at: new Date().toISOString() }],
+      bots: [{ ...agyBot, status: 'working' }],
+      messages: [],
+      approvals: [],
+      hopPauses: [],
+      locks: [],
+      maxHops: 10,
+      spawnEnabled: true,
+      emergencyStop: false,
+    }));
+    const orch2 = new Orchestrator();
+    (orch2 as unknown as { loadState: () => void }).loadState();
+    expect(orch2.getState().bots[0].status).toBe('idle');
   });
 });

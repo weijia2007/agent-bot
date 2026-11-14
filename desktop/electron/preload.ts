@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 type Listener = (payload: unknown) => void;
 
@@ -19,11 +19,17 @@ const api = {
   setRoomProject: (roomId: string, projectPath: string) => invoke('setRoomProject', roomId, projectPath),
   createBot: (input: unknown) => invoke('createBot', input),
   deleteBot: (botId: string) => invoke('deleteBot', botId),
+  stopBot: (botId: string) => invoke('stopBot', botId),
   reconnectBot: (botId: string) => invoke('reconnectBot', botId),
-  setBotModel: (botId: string, model: string) => invoke('setBotModel', botId, model),
+  setBotModel: (botId: string, model: string, reasoningEffort?: string) => invoke('setBotModel', botId, model, reasoningEffort),
+  listModels: (refresh?: boolean) => invoke('listModels', Boolean(refresh)),
+  listDesktopSessions: (engine: string) => invoke('listDesktopSessions', engine),
+  listDesktopTargets: () => invoke('listDesktopTargets'),
+  launchDesktop: (engine: string, roomId: string) => invoke('launchDesktop', engine, roomId),
+  setBotPermission: (id: string, mode: string) => invoke('setBotPermission', id, mode),
   setSupervisor: (botId: string) => invoke('setSupervisor', botId),
-  sendMessage: (room: string, text: string, target?: string) => invoke('sendMessage', room, text, target ?? null),
-  sendDirect: (botId: string, text: string, room: string) => invoke('sendDirect', botId, text, room),
+  sendMessage: (room: string, text: string, target?: string, attachments?: string[]) => invoke('sendMessage', room, text, target ?? null, attachments),
+  sendDirect: (botId: string, text: string, room: string, attachments?: string[]) => invoke('sendDirect', botId, text, room, attachments),
   emergencyStop: (active: boolean) => invoke('emergencyStop', active),
   respondApproval: (id: string, approved: boolean, reason?: string) => invoke('respondApproval', id, approved, reason ?? null),
   resolveHopPause: (id: string, resume: boolean) => invoke('resolveHopPause', id, resume),
@@ -40,7 +46,12 @@ const api = {
   quotas: () => invoke('quotas'),
   openPath: (target: string) => invoke('openPath', target),
   pickProject: () => invoke('pickProject'),
+  pickAttachments: () => invoke('pickAttachments'),
+  pathForFile: (file: File) => webUtils.getPathForFile(file),
+  openSession: (id: string) => invoke('openSession', id),
+  openCodexConversation: (id: string) => invoke('openCodexConversation', id),
   dataHome: () => invoke('dataHome'),
+  openHelp: () => invoke('openHelp'),
   on: (channel: string, listener: Listener): (() => void) => {
     const set = listeners.get(channel) ?? new Set<Listener>();
     set.add(listener);

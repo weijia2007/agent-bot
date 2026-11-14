@@ -17,6 +17,12 @@ extraResources:
       - '**/*'
   - from: build/icon.ico
     to: icon.ico
+  - from: ../README.md
+    to: README.zh-CN.md
+  - from: ../docs/桌面会话验收-0.2.md
+    to: docs/桌面会话验收-0.2.md
+  - from: ../docs/screenshots
+    to: docs/screenshots
 win:
   icon: build/icon.ico
   signAndEditExecutable: false
