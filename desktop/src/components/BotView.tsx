@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, CornerDownLeft, ExternalLink, Paperclip, PanelRightClose, PanelRightOpen, RefreshCw, Send, Sparkles, Square, X } from 'lucide-react';
 import { useStudio } from '../store';
 import { ENGINE_LABELS, formatModelLabel, type BotConfig, type PermissionMode, type RoomMessage } from '../types';
-import { BotAvatar, EmptyState, formatTime, StatusDot } from './Common';
+import { BotAvatar, EmptyState, formatTime, StatusDot, HandoffContext } from './Common';
 import { extractLiveTurnStream, ModelPicker } from './ModelPicker';
 import { LiveProcessCard, MessageTraceDrawer } from './ProcessTimeline';
 import WorkspacePanel from './WorkspacePanel';
@@ -47,6 +47,7 @@ function DirectMessage({ message, bot, peerName }: { message: RoomMessage; bot: 
         <div className="text-[13.5px] leading-relaxed text-slate-200 whitespace-pre-wrap break-words select-text">
           <MessageTraceDrawer steps={message.trace_steps} />
           {message.text}
+          <HandoffContext handoff={message.handoff} />
         </div>
       </div>
     </div>

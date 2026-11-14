@@ -77,8 +77,8 @@ abstract class ObservedDesktopAdapter implements AgentAdapter {
       while (!turn.done && !turn.cancelled && Date.now() < deadline) await new Promise(r => setTimeout(r, 200));
       if (!turn.done && !turn.cancelled) turn.error = '等待桌面任务完成超时；执行结果不确定，请查看原对话，不会自动重发';
       if (turn.cancelled) turn.error = '任务已请求中断，请以原 Agent 的停止状态为准';
-      return { ok: !turn.error, sessionId: bot.external_session_id, text: turn.text, error: turn.error, uncertain: !!turn.error };
-    } catch (e) { return { ok: false, sessionId: bot.external_session_id, text: turn.text, error: (e as Error).message, uncertain: true }; }
+      return { ok: !turn.error, sessionId: bot.external_session_id, text: turn.text, nativeMessageIds: [...turn.messages.keys()], error: turn.error, uncertain: !!turn.error };
+    } catch (e) { return { ok: false, sessionId: bot.external_session_id, text: turn.text, nativeMessageIds: [...turn.messages.keys()], error: (e as Error).message, uncertain: true }; }
     finally { if (standalone) clearInterval(standalone); this.active = undefined; }
   }
 

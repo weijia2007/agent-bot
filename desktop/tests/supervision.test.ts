@@ -29,7 +29,7 @@ vi.mock('../electron/adapters', () => ({ createAdapter: () => ({
     emit({ type: 'tool_call_start', tool: 'read_file', args: 'task.txt' });
     emit({ type: 'tool_call_result', tool: 'read_file', output: 'read', ok: true });
     const text = fake.answer(bot, prompt); emit({ type: 'text_delta', text });
-    emit({ type: 'turn_completed' }); return { ok: true, sessionId: bot.external_session_id, text };
+    emit({ type: 'turn_completed' }); return { ok: true, sessionId: bot.external_session_id, text, nativeMessageIds: [`native-${fake.calls.length}`] };
   },
   abortTurn: async () => {}, dispose: async () => {}, applySettings: async () => {}, observe: () => () => {},
 }) }));
@@ -73,12 +73,19 @@ describe('desktop team routing', () => {
     const task = await o.sendMessage(room, '执行项目任务');
     await until(() => fake.calls.length === 5);
     expect(fake.calls.map(c => c.botId)).toEqual([sup.bot_id, worker.bot_id, sup.bot_id, reviewer.bot_id, sup.bot_id]);
+    expect(fake.calls[3].prompt).toContain('antigravity 已完成任务并验证');
+    expect(fake.calls[3].prompt).toContain('上游任务汇报');
     const state = o.getState();
     expect(state.messages.some(m => m.from === sup.bot_id && m.to === worker.bot_id)).toBe(true);
+    expect(state.messages.find(m => m.from === sup.bot_id && m.to === reviewer.bot_id)?.handoff?.text).toContain('antigravity 已完成任务并验证');
     expect(state.messages.some(m => m.from === worker.bot_id && m.to === sup.bot_id && m.text.includes('汇报'))).toBe(true);
     expect(state.messages.filter(m => m.from === sup.bot_id && m.text === '所有任务完成，验证通过。')).toHaveLength(1);
     expect(state.messages.filter(m => m.trace_id === task.trace_id).length).toBeGreaterThan(6);
     expect(state.activity?.[worker.bot_id].some(e => e.event.type === 'tool_call_start')).toBe(true);
+    const beforeMirror = state.messages.length;
+    const lastReply = state.messages.find(m => m.from === sup.bot_id && m.text === '所有任务完成，验证通过。')!;
+    (o as any).onDesktopObservation(sup, { type: 'message', role: 'assistant', id: lastReply.native_message_ids![0], text: lastReply.text, at: new Date().toISOString() });
+    expect(state.messages).toHaveLength(beforeMirror);
   });
 
   it('preserves the conversation on model changes and rejects settings the desktop refuses', async () => {

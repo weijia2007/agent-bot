@@ -144,7 +144,7 @@ export default function Sidebar(): React.ReactNode {
           <MessageSquare size={14} /> 群聊主厅
         </button>
 
-        <SectionTitle right={<span className="text-[10px] text-slate-600">{roomBots.length}</span>}>主管</SectionTitle>
+        <SectionTitle right={<span className="text-[10px] text-slate-600">{supervisor ? 1 : 0}</span>}>主管</SectionTitle>
         {supervisor ? (
           <div
             onClick={() => setActiveBot(supervisor.bot_id)}

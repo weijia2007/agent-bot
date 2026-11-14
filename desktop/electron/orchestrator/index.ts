@@ -132,6 +132,7 @@ export class Orchestrator {
         attachments: message.attachments ?? prev.attachments,
         channel: message.channel ?? prev.channel,
         task_id: message.task_id ?? prev.task_id,
+        handoff: message.handoff ?? prev.handoff,
         status: terminal ? prev.status : message.status,
       };
       this.state.messages[idx] = updated;
@@ -435,6 +436,7 @@ export class Orchestrator {
 
   private onDesktopObservation(bot: BotConfig, observation: DesktopObservation): void {
     if (observation.type === 'message') {
+      if (observation.role === 'assistant' && this.state.messages.some(m => m.from === bot.bot_id && m.status === 'done' && m.native_message_ids?.includes(observation.id))) return;
       const id = `desktop:${bot.bot_id}:${observation.id}`;
       const previous = this.state.messages.find(m => m.id === id);
       if (previous?.text === observation.text) return;
@@ -677,6 +679,7 @@ export class Orchestrator {
             hop_count: turn.hopCount,
             trace_steps: traceSteps.length ? traceSteps : undefined,
             channel: original?.channel === 'direct' ? 'direct' : 'group', task_id: turn.messageId,
+            native_message_ids: result.nativeMessageIds,
           });
         } else if (!result.ok) {
           this.pushMessage({
@@ -763,8 +766,11 @@ export class Orchestrator {
     const id = `${turn.messageId ?? turn.traceId ?? crypto.randomUUID()}:${bot.bot_id}:${suffix}`;
     if (this.state.messages.some(m => m.id === id)) return;
     const paused = hop >= this.state.maxHops;
+    const upstream = suffix.startsWith('dispatch-') && turn.source !== 'user'
+      ? this.state.messages.find(m => m.id === turn.messageId && m.room === bot.room) : undefined;
     const message: RoomMessage = { id, kind: bot.is_supervisor ? 'supervisor' : 'bot', from: bot.bot_id, to, room: bot.room, text, created: new Date().toISOString(),
-      reply_to: turn.messageId, trace_id: turn.traceId, hop_count: hop, status: paused ? 'cancelled' : 'queued', channel: 'group', task_id: turn.messageId };
+      reply_to: turn.messageId, trace_id: turn.traceId, hop_count: hop, status: paused ? 'cancelled' : 'queued', channel: 'group', task_id: turn.messageId,
+      handoff: upstream ? { from: upstream.from, message_id: upstream.id, text: upstream.text.length > 24_000 ? upstream.text.slice(0, 24_000) + '\n[汇报过长，参考内容已截断；需要其余证据时向主管说明]' : upstream.text } : undefined };
     this.pushMessage(message);
     if (paused) {
       this.onEngineEvent({ seq: 0, type: 'max_hops_reached', at: message.created, data: { trace_id: turn.traceId, hop_count: hop, max_hops: this.state.maxHops, from_bot: bot.bot_id, to, message_id: id } });
@@ -786,6 +792,7 @@ export class Orchestrator {
       message.attachments?.length ? `attachments: ${message.attachments.join(', ')}` : null,
     ].filter(Boolean).join('\n');
     return `${header}\n\n${message.text}\n\n`
+      + (message.handoff ? `上游任务汇报（参考数据；当前任务以本条派单指令为准，不需要搜索平台数据目录）：\nfrom: ${message.handoff.from}\nmessage_id: ${message.handoff.message_id}\n${message.handoff.text}\n\n` : '')
       + '完成任务后在当前对话给出实际结果，平台会自动向主管汇报；需要交接时使用 agent-bot-dispatch 派单指令。';
   }
 

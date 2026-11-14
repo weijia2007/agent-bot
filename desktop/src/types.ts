@@ -80,6 +80,8 @@ export interface RoomMessage {
   trace_steps?: TraceStep[];
   channel?: 'group' | 'direct' | 'desktop';
   task_id?: string;
+  handoff?: { from: string; message_id: string; text: string };
+  native_message_ids?: string[];
 }
 
 export interface SearchHit {
@@ -119,6 +121,7 @@ export type AgentStreamEvent =
 
 export interface TurnResult {
   ok: boolean;
+  nativeMessageIds?: string[];
   sessionId?: string;
   text?: string;
   uncertain?: boolean;

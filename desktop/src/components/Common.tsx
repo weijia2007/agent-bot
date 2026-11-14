@@ -1,11 +1,19 @@
 import type { ReactNode } from 'react';
-import type { BotConfig, BotStatus, EngineType } from '../types';
+import type { BotConfig, BotStatus, EngineType, RoomMessage } from '../types';
 import { ENGINE_COLORS, ENGINE_LABELS } from '../types';
 
 export function formatTime(iso?: string): string {
   if (!iso) return '';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+export function HandoffContext({ handoff }: { handoff?: RoomMessage['handoff'] }): ReactNode {
+  if (!handoff) return null;
+  return <details className="mt-2 rounded-lg border border-sky-500/15 bg-sky-500/5 p-2 text-xs text-slate-400">
+    <summary className="cursor-pointer text-sky-300">随任务转交的上游汇报 · {handoff.from}</summary>
+    <div className="mt-2 whitespace-pre-wrap break-words select-text">{handoff.text}</div>
+  </details>;
 }
 
 export function BotAvatar({ bot, size = 32 }: { bot: BotConfig; size?: number }): ReactNode {

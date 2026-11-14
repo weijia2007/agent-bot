@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, AtSign, CheckCircle2, CornerDownLeft, Paperclip, Search, Send, ShieldAlert, Sparkles, Users, X, XCircle } from 'lucide-react';
 import { useStudio } from '../store';
 import type { BotConfig, RoomMessage, SearchHit } from '../types';
-import { BotAvatar, EmptyState, EngineBadge, formatTime } from './Common';
+import { BotAvatar, EmptyState, EngineBadge, formatTime, HandoffContext } from './Common';
 import { extractLiveTurnStream, ModelPicker } from './ModelPicker';
 import { LiveProcessCard, MessageTraceDrawer } from './ProcessTimeline';
 
@@ -75,6 +75,7 @@ function MessageCard({ message, bots, onPickBot }: {
         <div className="rounded-xl border border-white/6 bg-white/[.02] px-3.5 py-2.5 text-[13.5px] leading-relaxed text-slate-200 whitespace-pre-wrap break-words select-text">
           <MessageTraceDrawer steps={message.trace_steps} />
           {message.text}
+          <HandoffContext handoff={message.handoff} />
         </div>
         {message.progress && <div className="mt-1.5 flex items-center gap-1.5 text-[10.5px] text-slate-500"><CheckCircle2 size={11} />{message.progress}</div>}
         {message.review_items && message.review_items.length > 0 && (

@@ -34,6 +34,7 @@ describe('real desktop reply assembly', () => {
     const result = await turn;
     expect(result.ok).toBe(true);
     expect(result.text).toBe(full + '\n\n等待成员汇报。');
+    expect(result.nativeMessageIds).toEqual(['native-test:1', 'native-test:2']);
     expect(streamed).toBe(result.text);
     expect(extractDispatches(result.text!).actions).toEqual([{ to: 'worker', text: '请在当前目录只读执行' }]);
     await adapter.dispose(bot);
